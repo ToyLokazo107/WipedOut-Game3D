@@ -13,6 +13,10 @@ namespace WipedOut.Board
     [DisallowMultipleComponent]
     public class BoardController : MonoBehaviour
     {
+        [Header("Configuración")]
+        [SerializeField, Tooltip("BoardConfig de referencia. GameManager puede enviar otra configuración al generar un nivel.")]
+        private BoardConfig boardConfig;
+
         [Header("Tablero")]
         [SerializeField, Tooltip("Padre opcional para las casillas generadas.")]
         private Transform boardRoot;
@@ -73,7 +77,7 @@ namespace WipedOut.Board
 
         private TileData[,] tiles;
         private Transform tilesRoot;
-        private readonly MaterialPropertyBlock propertyBlock = new MaterialPropertyBlock();
+        private MaterialPropertyBlock propBlock;
 
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
@@ -86,6 +90,8 @@ namespace WipedOut.Board
 
         private void Awake()
         {
+            propBlock = new MaterialPropertyBlock();
+            ResolveBoardConfig();
             ResolveControllers();
         }
 
@@ -97,6 +103,8 @@ namespace WipedOut.Board
 
         private void Start()
         {
+            ResolveBoardConfig();
+
             if (player1Controller == null || player2Controller == null)
             {
                 ResolveControllers();
@@ -113,11 +121,25 @@ namespace WipedOut.Board
         /// Genera una grilla vacía para un nuevo nivel. Las minas se colocan después
         /// durante la Fase de Colocación.
         /// </summary>
-        public void GenerateBoard3D(BoardConfig config)
+        public void GenerateBoard3D(BoardConfig config = null)
         {
-            if (config == null)
+            BoardConfig activeConfig = config;
+
+            if (activeConfig == null)
+                activeConfig = boardConfig;
+
+            if (activeConfig == null)
+                activeConfig = CurrentConfig;
+
+            if (activeConfig == null && GameManager.Instance != null)
+                activeConfig = GameManager.Instance.CurrentConfig;
+
+            if (activeConfig == null)
             {
-                Debug.LogError("BoardController: se recibió un BoardConfig nulo.", this);
+                Debug.LogError(
+                    "BoardController: no hay un BoardConfig asignado en el Inspector " +
+                    "ni se recibió uno para generar el tablero.",
+                    this);
                 return;
             }
 
@@ -127,11 +149,11 @@ namespace WipedOut.Board
                 SubscribeToControllers();
             }
 
-            CurrentConfig = config;
-            int width = Mathf.Max(1, config.gridWidth);
-            int height = Mathf.Max(1, config.gridHeight);
+            CurrentConfig = activeConfig;
+            int width = Mathf.Max(1, activeConfig.gridWidth);
+            int height = Mathf.Max(1, activeConfig.gridHeight);
 
-            MinesPerPlayer = Mathf.Max(0, config.mineCount);
+            MinesPerPlayer = Mathf.Max(0, activeConfig.mineCount);
             Player1MinesPlaced = 0;
             Player2MinesPlaced = 0;
             IsPlacementComplete = false;
@@ -557,10 +579,10 @@ namespace WipedOut.Board
             if (tileRenderer == null)
                 return;
 
-            propertyBlock.Clear();
-            propertyBlock.SetColor(BaseColorId, color);
-            propertyBlock.SetColor(ColorId, color);
-            tileRenderer.SetPropertyBlock(propertyBlock);
+            propBlock.Clear();
+            propBlock.SetColor(BaseColorId, color);
+            propBlock.SetColor(ColorId, color);
+            tileRenderer.SetPropertyBlock(propBlock);
         }
 
         private void RejectPlacement(int playerIndex, Vector2Int position, string reason)
@@ -586,6 +608,15 @@ namespace WipedOut.Board
 
             if (tile != null && tile.tileInstance != null)
                 RefreshTile(tile);
+        }
+
+        private void ResolveBoardConfig()
+        {
+            if (boardConfig == null && GameManager.Instance != null)
+                boardConfig = GameManager.Instance.CurrentConfig;
+
+            if (CurrentConfig == null && boardConfig != null)
+                CurrentConfig = boardConfig;
         }
 
         private void ResolveControllers()
