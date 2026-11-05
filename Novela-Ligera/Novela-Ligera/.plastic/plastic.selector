@@ -1,0 +1,4 @@
+repository "Novela-Ligera/Novela-Ligera@4674032740502@cloud"
+  path "/"
+    br "/main"
+    co "/main"
