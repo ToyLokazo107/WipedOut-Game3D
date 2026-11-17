@@ -37,6 +37,9 @@ namespace WipedOut.Online
         private readonly List<Image> cellImages = new List<Image>();
         private readonly List<Text> cellLabels = new List<Text>();
 
+        /// <summary>Única instancia (creada por <see cref="OnlineBootstrap"/>). Null antes de cargar la escena.</summary>
+        public static OnlineMatchScreen Instance { get; private set; }
+
         private Font font;
         private GameObject overlay;
         private GameObject lobbyPanel;
@@ -65,6 +68,7 @@ namespace WipedOut.Online
 
         private void Awake()
         {
+            Instance = this;
             service.ViewChanged += Render;
             service.Failed += ShowFailure;
             service.ResyncRequested += RequestResync;
@@ -76,6 +80,9 @@ namespace WipedOut.Online
             service.Failed -= ShowFailure;
             service.ResyncRequested -= RequestResync;
             _ = service.UnsubscribeAsync();
+
+            if (Instance == this)
+                Instance = null;
         }
 
         private void Update()

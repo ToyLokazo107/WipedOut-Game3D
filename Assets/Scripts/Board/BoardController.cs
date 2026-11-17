@@ -1,20 +1,25 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using WipedOut.Core;
 using WipedOut.Models;
+using WipedOut.Online;
+using WipedOut.Rules;
 
 namespace WipedOut.Board
 {
     /// <summary>
-    /// Genera el tablero 3D, gestiona la colocación manual de minas,
-    /// el destape de casillas y las consultas usadas por GameManager.
+    /// Vista del tablero 3D. No decide reglas: dibuja el estado que le pasa
+    /// <see cref="GameManager"/> (motor <see cref="MatchEngine"/>) o, en una partida online, la
+    /// <see cref="OnlineMatchView"/> que llega del servidor. La entrada del jugador se enruta a
+    /// <see cref="GameManager"/> y el resultado de las reglas llega de vuelta al refrescar.
     /// </summary>
     [DisallowMultipleComponent]
     public class BoardController : MonoBehaviour
     {
         [Header("Configuración")]
-        [SerializeField, Tooltip("BoardConfig de referencia. GameManager puede enviar otra configuración al generar un nivel.")]
+        [SerializeField, Tooltip("BoardConfig de referencia (legado). El tamaño lo decide WipedOut.Rules.")]
         private BoardConfig boardConfig;
 
         [Header("Tablero")]
@@ -55,43 +60,34 @@ namespace WipedOut.Board
         /// <summary>Se dispara cuando una colocación es rechazada.</summary>
         public event Action<int, Vector2Int, string> OnPlacementRejected;
 
-        /// <summary>Se dispara cuando ambos jugadores terminaron de colocar sus minas.</summary>
-        public event Action OnPlacementCompleted;
-
         /// <summary>Jugador, posición y si la casilla contenía una mina.</summary>
         public event Action<int, Vector2Int, bool> OnTileRevealed;
 
-        /// <summary>Se dispara cuando se revela la última casilla blanca del nivel.</summary>
-        public event Action OnAllWhiteTilesRevealed;
-
-        public BoardConfig CurrentConfig { get; private set; }
         public int GridWidth { get; private set; }
         public int GridHeight { get; private set; }
-        public int MinesPerPlayer { get; private set; }
-        public int Player1MinesPlaced { get; private set; }
-        public int Player2MinesPlaced { get; private set; }
-        public int TotalMinesPlaced => Player1MinesPlaced + Player2MinesPlaced;
-        public bool IsPlacementComplete { get; private set; }
-        public bool IsGamePhaseActive { get; private set; }
         public bool HasBoard => tiles != null;
 
         private TileData[,] tiles;
         private Transform tilesRoot;
         private MaterialPropertyBlock propBlock;
 
-        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
-        private static readonly int ColorId = Shader.PropertyToID("_Color");
+        private int[] stateBuffer = Array.Empty<int>();
+        private int[] ownerBuffer = Array.Empty<int>();
+        private bool minesVisibleBuffer;
 
         private Vector2Int player1Selection;
         private Vector2Int player2Selection;
         private bool hasPlayer1Selection;
         private bool hasPlayer2Selection;
-        private bool allWhiteTilesRevealedNotified;
+
+        private OnlineMatchScreen onlineScreen;
+
+        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
 
         private void Awake()
         {
             propBlock = new MaterialPropertyBlock();
-            ResolveBoardConfig();
             ResolveControllers();
         }
 
@@ -103,13 +99,8 @@ namespace WipedOut.Board
 
         private void Start()
         {
-            ResolveBoardConfig();
-
-            if (player1Controller == null || player2Controller == null)
-            {
-                ResolveControllers();
-                SubscribeToControllers();
-            }
+            ResolveControllers();
+            SubscribeToControllers();
         }
 
         private void OnDisable()
@@ -117,31 +108,24 @@ namespace WipedOut.Board
             UnsubscribeFromControllers();
         }
 
-        /// <summary>
-        /// Genera una grilla vacía para un nuevo nivel. Las minas se colocan después
-        /// durante la Fase de Colocación.
-        /// </summary>
-        public void GenerateBoard3D(BoardConfig config = null)
+        private void Update()
         {
-            BoardConfig activeConfig = config;
-
-            if (activeConfig == null)
-                activeConfig = boardConfig;
-
-            if (activeConfig == null)
-                activeConfig = CurrentConfig;
-
-            if (activeConfig == null && GameManager.Instance != null)
-                activeConfig = GameManager.Instance.CurrentConfig;
-
-            if (activeConfig == null)
+            // Enlaza una sola vez con la pantalla online (que se crea al final de cargar la escena)
+            // para dibujar en el tablero 3D la vista que devuelve el servidor.
+            if (onlineScreen == null)
             {
-                Debug.LogError(
-                    "BoardController: no hay un BoardConfig asignado en el Inspector " +
-                    "ni se recibió uno para generar el tablero.",
-                    this);
-                return;
+                onlineScreen = OnlineMatchScreen.Instance;
+                if (onlineScreen != null)
+                    onlineScreen.Service.ViewChanged += ApplyOnlineView;
             }
+        }
+
+        /// <summary>Genera una grilla vacía cuadrada. Las minas y el revelado los decide el motor.</summary>
+        public void GenerateBoard3D(int gridSize)
+        {
+            int size = Mathf.Max(1, gridSize);
+            GridWidth = size;
+            GridHeight = size;
 
             if (player1Controller == null || player2Controller == null)
             {
@@ -149,245 +133,84 @@ namespace WipedOut.Board
                 SubscribeToControllers();
             }
 
-            CurrentConfig = activeConfig;
-            int width = Mathf.Max(1, activeConfig.gridWidth);
-            int height = Mathf.Max(1, activeConfig.gridHeight);
-
-            MinesPerPlayer = Mathf.Max(0, activeConfig.mineCount);
-            Player1MinesPlaced = 0;
-            Player2MinesPlaced = 0;
-            IsPlacementComplete = false;
-            IsGamePhaseActive = false;
-            allWhiteTilesRevealedNotified = false;
-
-            if (MinesPerPlayer * 2 > width * height)
-            {
-                Debug.LogWarning(
-                    "BoardController: el nivel solicita más minas que casillas disponibles.",
-                    this);
-            }
-
-            BuildBoard(width, height);
+            BuildBoard(size, size);
             CaptureSelections();
+
+            stateBuffer = new int[size * size];
+            ownerBuffer = new int[size * size];
+            minesVisibleBuffer = false;
+
             RefreshAllTiles();
-
-            OnBoardGenerated?.Invoke(width, height);
+            OnBoardGenerated?.Invoke(size, size);
         }
 
-        /// <summary>Oculta las minas al comenzar la Fase de Juego.</summary>
-        public void BeginGamePhase()
+        /// <summary>Dibuja el estado del motor de reglas (partida local).</summary>
+        public void ApplyLocalState(GameManager gameManager)
         {
-            IsPlacementComplete = true;
-            IsGamePhaseActive = true;
-            RefreshAllTiles();
+            if (gameManager == null)
+                return;
+
+            ApplyCellStates(
+                gameManager.GridSize,
+                gameManager.CellStates(),
+                gameManager.MineCells(),
+                gameManager.MineOwners(),
+                gameManager.MinesVisible);
         }
 
-        /// <summary>
-        /// Intenta colocar una mina del jugador indicado en la casilla indicada.
-        /// </summary>
-        public bool TryPlaceMine(int playerIndex, Vector2Int position)
+        /// <summary>Dibuja el estado de una partida online (vista autorizada del servidor).</summary>
+        public void ApplyOnlineView(OnlineMatchView view)
         {
-            GameManager gameManager = GameManager.Instance;
+            if (view == null)
+                return;
 
-            if (gameManager == null || gameManager.CurrentState != GameState.Placement)
-                return false;
+            int size = view.size;
+            if (size <= 0 || view.cells == null || view.cells.Length != size * size)
+                return;
 
-            if (IsPlacementComplete || (playerIndex != 1 && playerIndex != 2))
-                return false;
+            if (!HasBoard || GridWidth != size)
+                GenerateBoard3D(size);
 
-            if (MinesPerPlayer <= 0)
-                return false;
+            bool minesVisible = view.status == OnlineStatus.Finished
+                || view.phase == OnlinePhase.Placement
+                || view.phase == OnlinePhase.Memorize;
 
-            TileData tile = GetTile(position);
-
-            if (tile == null)
-            {
-                RejectPlacement(playerIndex, position, "La posición está fuera del tablero.");
-                return false;
-            }
-
-            if (tile.isMine)
-            {
-                RejectPlacement(playerIndex, position, "La casilla ya contiene una mina.");
-                return false;
-            }
-
-            if (GetMinesPlaced(playerIndex) >= MinesPerPlayer)
-            {
-                RejectPlacement(playerIndex, position, "Ya colocaste todas tus minas.");
-                return false;
-            }
-
-            tile.SetMine(playerIndex);
-            tile.isRevealed = false;
-
-            if (playerIndex == 1)
-                Player1MinesPlaced++;
-            else
-                Player2MinesPlaced++;
-
-            RefreshTile(tile);
-            OnMinePlaced?.Invoke(
-                playerIndex,
-                position,
-                GetMinesPlaced(playerIndex),
-                MinesPerPlayer);
-
-            if (Player1MinesPlaced >= MinesPerPlayer && Player2MinesPlaced >= MinesPerPlayer)
-                CompletePlacement();
-
-            return true;
+            ApplyCellStates(size, view.cells, view.mines, view.mineOwners, minesVisible);
         }
 
-        /// <summary>
-        /// Destapa una casilla durante la Fase de Juego. Solo el jugador con el turno
-        /// actual puede hacerlo y solo una vez por casilla.
-        /// </summary>
-        public bool TryRevealTile(int playerIndex, Vector2Int position)
-        {
-            GameManager gameManager = GameManager.Instance;
-
-            if (gameManager == null ||
-                gameManager.CurrentState != GameState.PlayerTurn ||
-                !IsGamePhaseActive)
-            {
-                return false;
-            }
-
-            if (playerIndex != gameManager.CurrentPlayer)
-                return false;
-
-            TileData tile = GetTile(position);
-
-            if (tile == null || tile.isRevealed)
-                return false;
-
-            bool isMine = tile.isMine;
-            tile.isRevealed = true;
-
-            RefreshTile(tile);
-            gameManager.ResolveTile(isMine);
-
-            OnTileRevealed?.Invoke(playerIndex, position, isMine);
-
-            if (gameManager.CurrentState == GameState.PlayerTurn)
-                NotifyIfAllWhiteTilesRevealed();
-
-            return true;
-        }
-
-        /// <summary>
-        /// Cuenta las casillas blancas pendientes: seguras y todavía sin destapar.
-        /// Las minas ocultas no cuentan como casillas libres pendientes.
-        /// </summary>
-        public int CountHiddenWhiteTiles()
+        private void ApplyCellStates(int gridSize, int[] states, int[] mines, int[] mineOwners, bool minesVisible)
         {
             if (tiles == null)
-                return 0;
+                return;
 
-            int count = 0;
+            Dictionary<int, int> owners = new Dictionary<int, int>();
+            if (mines != null)
+            {
+                for (int i = 0; i < mines.Length; i++)
+                {
+                    int owner = mineOwners != null && i < mineOwners.Length ? mineOwners[i] : 0;
+                    owners[mines[i]] = owner;
+                }
+            }
 
             for (int x = 0; x < GridWidth; x++)
             {
                 for (int y = 0; y < GridHeight; y++)
                 {
-                    if (tiles[x, y] != null && tiles[x, y].IsHiddenWhite)
-                        count++;
+                    int cell = GameManager.CellIndex(x, y, gridSize);
+                    int state = states != null && cell < states.Length ? states[cell] : -1;
+                    int owner = owners.TryGetValue(cell, out int o) ? o : 0;
+
+                    if (cell >= 0 && cell < stateBuffer.Length)
+                        stateBuffer[cell] = state;
+
+                    if (cell >= 0 && cell < ownerBuffer.Length)
+                        ownerBuffer[cell] = owner;
                 }
             }
 
-            return count;
-        }
-
-        /// <summary>
-        /// Devuelve true si todavía queda alguna casilla blanca (segura y sin destapar).
-        /// </summary>
-        public bool HasHiddenWhiteTiles()
-        {
-            return CountHiddenWhiteTiles() > 0;
-        }
-
-        /// <summary>
-        /// Devuelve true si el tablero existe y ya no quedan casillas blancas por revelar.
-        /// </summary>
-        public bool IsBoardCompleted()
-        {
-            return HasBoard && CountHiddenWhiteTiles() == 0;
-        }
-
-        /// <summary>Revela todas las minas (se usa al terminar la partida).</summary>
-        public void RevealAllMines()
-        {
-            if (tiles == null)
-                return;
-
-            for (int x = 0; x < GridWidth; x++)
-            {
-                for (int y = 0; y < GridHeight; y++)
-                {
-                    TileData tile = tiles[x, y];
-
-                    if (tile != null && tile.isMine)
-                        tile.isRevealed = true;
-                }
-            }
-
+            minesVisibleBuffer = minesVisible;
             RefreshAllTiles();
-        }
-
-        /// <summary>Devuelve los datos de una casilla o null si está fuera del tablero.</summary>
-        public TileData GetTile(Vector2Int position)
-        {
-            if (tiles == null)
-                return null;
-
-            if (position.x < 0 || position.y < 0 ||
-                position.x >= GridWidth || position.y >= GridHeight)
-            {
-                return null;
-            }
-
-            return tiles[position.x, position.y];
-        }
-
-        /// <summary>Devuelve cuántas minas lleva colocadas el jugador indicado.</summary>
-        public int GetMinesPlaced(int playerIndex)
-        {
-            if (playerIndex == 1)
-                return Player1MinesPlaced;
-
-            if (playerIndex == 2)
-                return Player2MinesPlaced;
-
-            return 0;
-        }
-
-        private void NotifyIfAllWhiteTilesRevealed()
-        {
-            if (allWhiteTilesRevealedNotified || tiles == null)
-                return;
-
-            if (CountHiddenWhiteTiles() != 0)
-                return;
-
-            allWhiteTilesRevealedNotified = true;
-            OnAllWhiteTilesRevealed?.Invoke();
-        }
-
-        private void CompletePlacement()
-        {
-            if (IsPlacementComplete)
-                return;
-
-            IsPlacementComplete = true;
-            OnPlacementCompleted?.Invoke();
-
-            if (GameManager.Instance != null)
-                GameManager.Instance.NotifyPlacementComplete();
-            else
-                Debug.LogError(
-                    "BoardController: no se encontró GameManager para iniciar la Fase de Juego.",
-                    this);
         }
 
         private void HandleSelectionChanged(PlayerController3D controller, Vector2Int position)
@@ -417,9 +240,138 @@ namespace WipedOut.Board
             GameState state = GameManager.Instance.CurrentState;
 
             if (state == GameState.Placement)
-                TryPlaceMine(controller.PlayerIndex, position);
+            {
+                PlaceOutcome outcome = GameManager.Instance.PlaceMine(controller.PlayerIndex, position);
+
+                if (outcome == PlaceOutcome.Placed)
+                {
+                    OnMinePlaced?.Invoke(
+                        controller.PlayerIndex,
+                        position,
+                        GameManager.Instance.PlacedBy(controller.PlayerIndex),
+                        GameManager.Instance.MinesPerPlayer);
+                }
+                else
+                {
+                    OnPlacementRejected?.Invoke(controller.PlayerIndex, position, RejectMessage(outcome));
+                    StartCoroutine(FlashInvalidTile(position));
+                }
+            }
             else if (state == GameState.PlayerTurn)
-                TryRevealTile(controller.PlayerIndex, position);
+            {
+                RevealOutcome outcome = GameManager.Instance.RevealTile(controller.PlayerIndex, position);
+
+                if (outcome == RevealOutcome.Safe || outcome == RevealOutcome.Mine)
+                    OnTileRevealed?.Invoke(controller.PlayerIndex, position, outcome == RevealOutcome.Mine);
+            }
+        }
+
+        private static string RejectMessage(PlaceOutcome outcome)
+        {
+            switch (outcome)
+            {
+                case PlaceOutcome.NotYourTurn:
+                    return "No es tu turno para colocar.";
+                case PlaceOutcome.InvalidCell:
+                    return "La posición está fuera del tablero.";
+                case PlaceOutcome.CellOccupied:
+                    return "La casilla ya contiene una mina.";
+                case PlaceOutcome.WrongPhase:
+                    return "No estás en la fase de colocación.";
+                default:
+                    return "Colocación rechazada.";
+            }
+        }
+
+        private void RefreshAllTiles()
+        {
+            if (tiles == null)
+                return;
+
+            for (int x = 0; x < GridWidth; x++)
+            {
+                for (int y = 0; y < GridHeight; y++)
+                    RefreshTile(tiles[x, y]);
+            }
+        }
+
+        private void RefreshTile(TileData tile)
+        {
+            if (tile == null)
+                return;
+
+            int cell = GameManager.CellIndex(tile.gridPosition.x, tile.gridPosition.y, GridWidth);
+            int state = cell >= 0 && cell < stateBuffer.Length ? stateBuffer[cell] : -1;
+            int owner = cell >= 0 && cell < ownerBuffer.Length ? ownerBuffer[cell] : 0;
+
+            Color color = GetCellColor(state, owner, minesVisibleBuffer);
+
+            if (hasPlayer1Selection && tile.gridPosition == player1Selection)
+                color = Color.Lerp(color, player1SelectionColor, selectionTint);
+
+            if (hasPlayer2Selection && tile.gridPosition == player2Selection)
+                color = Color.Lerp(color, player2SelectionColor, selectionTint);
+
+            ApplyTileColor(tile, color);
+        }
+
+        private Color GetCellColor(int state, int owner, bool minesVisible)
+        {
+            if (owner != 0)
+            {
+                if (state == 1)
+                    return triggeredMineColor;
+
+                return minesVisible
+                    ? (owner == 1 ? player1MineColor : player2MineColor)
+                    : hiddenTileColor;
+            }
+
+            return state == 0 ? revealedSafeColor : hiddenTileColor;
+        }
+
+        private void ApplyTileColor(TileData tile, Color color)
+        {
+            if (tile == null || tile.tileInstance == null)
+                return;
+
+            Renderer tileRenderer = tile.tileInstance.GetComponent<Renderer>();
+
+            if (tileRenderer == null)
+                return;
+
+            propBlock.Clear();
+            propBlock.SetColor(BaseColorId, color);
+            propBlock.SetColor(ColorId, color);
+            tileRenderer.SetPropertyBlock(propBlock);
+        }
+
+        private IEnumerator FlashInvalidTile(Vector2Int position)
+        {
+            TileData tile = GetTile(position);
+
+            if (tile == null || tile.tileInstance == null)
+                yield break;
+
+            ApplyTileColor(tile, invalidPlacementColor);
+            yield return new WaitForSeconds(invalidFlashDuration);
+
+            if (tile != null && tile.tileInstance != null)
+                RefreshTile(tile);
+        }
+
+        private TileData GetTile(Vector2Int position)
+        {
+            if (tiles == null)
+                return null;
+
+            if (position.x < 0 || position.y < 0 ||
+                position.x >= GridWidth || position.y >= GridHeight)
+            {
+                return null;
+            }
+
+            return tiles[position.x, position.y];
         }
 
         private void BuildBoard(int width, int height)
@@ -511,112 +463,6 @@ namespace WipedOut.Board
 
             if (hasPlayer2Selection)
                 player2Selection = player2Controller.SelectedTile;
-        }
-
-        private void RefreshAllTiles()
-        {
-            if (tiles == null)
-                return;
-
-            for (int x = 0; x < GridWidth; x++)
-            {
-                for (int y = 0; y < GridHeight; y++)
-                    RefreshTile(tiles[x, y]);
-            }
-        }
-
-        private void RefreshTile(TileData tile)
-        {
-            if (tile == null)
-                return;
-
-            ApplyTileColor(tile, GetTileColor(tile));
-        }
-
-        private Color GetTileColor(TileData tile)
-        {
-            Color color;
-
-            if (tile.isMine)
-            {
-                if (tile.isRevealed)
-                {
-                    color = triggeredMineColor;
-                }
-                else if (!IsGamePhaseActive)
-                {
-                    color = tile.mineOwner == 1
-                        ? player1MineColor
-                        : player2MineColor;
-                }
-                else
-                {
-                    // Durante la Fase de Juego las minas se ocultan y lucen como casillas blancas.
-                    color = hiddenTileColor;
-                }
-            }
-            else
-            {
-                color = tile.isRevealed ? revealedSafeColor : hiddenTileColor;
-            }
-
-            if (hasPlayer1Selection && tile.gridPosition == player1Selection)
-                color = Color.Lerp(color, player1SelectionColor, selectionTint);
-
-            if (hasPlayer2Selection && tile.gridPosition == player2Selection)
-                color = Color.Lerp(color, player2SelectionColor, selectionTint);
-
-            return color;
-        }
-
-        private void ApplyTileColor(TileData tile, Color color)
-        {
-            if (tile == null || tile.tileInstance == null)
-                return;
-
-            Renderer tileRenderer = tile.tileInstance.GetComponent<Renderer>();
-
-            if (tileRenderer == null)
-                return;
-
-            propBlock.Clear();
-            propBlock.SetColor(BaseColorId, color);
-            propBlock.SetColor(ColorId, color);
-            tileRenderer.SetPropertyBlock(propBlock);
-        }
-
-        private void RejectPlacement(int playerIndex, Vector2Int position, string reason)
-        {
-            OnPlacementRejected?.Invoke(playerIndex, position, reason);
-            Debug.LogWarning(
-                "BoardController: el Jugador " + playerIndex +
-                " no puede colocar una mina en " + position + ". " + reason,
-                this);
-
-            StartCoroutine(FlashInvalidTile(position));
-        }
-
-        private IEnumerator FlashInvalidTile(Vector2Int position)
-        {
-            TileData tile = GetTile(position);
-
-            if (tile == null || tile.tileInstance == null)
-                yield break;
-
-            ApplyTileColor(tile, invalidPlacementColor);
-            yield return new WaitForSeconds(invalidFlashDuration);
-
-            if (tile != null && tile.tileInstance != null)
-                RefreshTile(tile);
-        }
-
-        private void ResolveBoardConfig()
-        {
-            if (boardConfig == null && GameManager.Instance != null)
-                boardConfig = GameManager.Instance.CurrentConfig;
-
-            if (CurrentConfig == null && boardConfig != null)
-                CurrentConfig = boardConfig;
         }
 
         private void ResolveControllers()
