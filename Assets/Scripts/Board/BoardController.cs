@@ -89,6 +89,7 @@ namespace WipedOut.Board
         {
             propBlock = new MaterialPropertyBlock();
             ResolveControllers();
+            SetBoardVisible(false);
         }
 
         private void OnEnable()
@@ -176,6 +177,7 @@ namespace WipedOut.Board
                 || view.phase == OnlinePhase.Memorize;
 
             ApplyCellStates(size, view.cells, view.mines, view.mineOwners, minesVisible);
+            SetBoardVisible(true);
         }
 
         private void ApplyCellStates(int gridSize, int[] states, int[] mines, int[] mineOwners, bool minesVisible)
@@ -414,6 +416,7 @@ namespace WipedOut.Board
             {
                 tileObject = Instantiate(tilePrefab, root);
                 tileObject.transform.localPosition = localPosition;
+                EnsurePositiveScale(tileObject.transform);
             }
             else
             {
@@ -426,6 +429,16 @@ namespace WipedOut.Board
 
             tileObject.name = "Tile_" + x + "_" + y;
             return tileObject;
+        }
+
+        /// <summary>Evita que un prefab con escala negativa dispare el aviso del BoxCollider.</summary>
+        private static void EnsurePositiveScale(Transform t)
+        {
+            Vector3 scale = t.localScale;
+            t.localScale = new Vector3(
+                Mathf.Max(0.0001f, Mathf.Abs(scale.x)),
+                Mathf.Max(0.0001f, Mathf.Abs(scale.y)),
+                Mathf.Max(0.0001f, Mathf.Abs(scale.z)));
         }
 
         private Transform GetTilesRoot()
@@ -451,6 +464,19 @@ namespace WipedOut.Board
 
             tilesRoot = null;
             tiles = null;
+        }
+
+        /// <summary>Muestra u oculta el tablero 3D y los jugadores. Oculta hasta que entra una partida online.</summary>
+        private void SetBoardVisible(bool visible)
+        {
+            if (player1Controller != null)
+                player1Controller.gameObject.SetActive(visible);
+
+            if (player2Controller != null)
+                player2Controller.gameObject.SetActive(visible);
+
+            if (tilesRoot != null)
+                tilesRoot.gameObject.SetActive(visible);
         }
 
         private void CaptureSelections()

@@ -705,7 +705,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::WipedOut.Core.GameManager
   levelConfigs:
   - {fileID: 11400000, guid: e8d3c30c925de0f46a68955c82f366d0, type: 2}
-  autoStart: 1
+  autoStart: 0
   maxGridSize: 10
   boardController: {fileID: 1908749141}
   player1Controller: {fileID: 1245009850}

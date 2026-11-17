@@ -147,22 +147,6 @@ namespace WipedOut.Online
 
         // ------------------------------------------------------------------ acciones
 
-        private async void Open()
-        {
-            overlay.SetActive(true);
-            overlay.transform.SetAsLastSibling();
-            Render(service.Current);
-
-            if (await service.EnsureReadyAsync(profileInput != null ? profileInput.text : null))
-            {
-                await service.SubscribeAsync();
-                if (service.Current != null)
-                {
-                    _ = service.RefreshAsync();
-                }
-            }
-        }
-
         private void Close()
         {
             overlay.SetActive(false);
@@ -513,9 +497,6 @@ namespace WipedOut.Online
         {
             font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
 
-            Button entry = CreateButton(transform, "ONLINE", new Vector2(1f, 1f), new Vector2(-150f, -55f), new Vector2(240f, 70f), Open);
-            entry.name = "OnlineEntryButton";
-
             overlay = new GameObject("OnlineOverlay", typeof(RectTransform));
             overlay.transform.SetParent(transform, false);
             overlay.AddComponent<Image>().color = Background;
@@ -552,7 +533,10 @@ namespace WipedOut.Online
             forfeitButton = CreateButton(matchPanel.transform, "FORFEIT", new Vector2(0f, 0f), new Vector2(190f, 80f), new Vector2(300f, 90f), OnForfeitClicked);
             CreateButton(matchPanel.transform, "LEAVE", new Vector2(1f, 0f), new Vector2(-190f, 80f), new Vector2(300f, 90f), OnLeaveClicked);
 
-            overlay.SetActive(false);
+            // La pantalla online es ahora la entrada directa: se muestra el lobby (WIPED OUT? ONLINE)
+            // nada más cargar la escena, sin un botón ONLINE flotante.
+            Render(null);
+            overlay.SetActive(true);
         }
 
         private GameObject NewPanel(string name)
