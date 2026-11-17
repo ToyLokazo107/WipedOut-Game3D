@@ -462,6 +462,25 @@ public class MatchRulesTests
     }
 
     [Test]
+    public void UnReintentoConElMismoRequestIdSeReconoceYNoDuplicaLaJugada()
+    {
+        var state = Searching();
+        var turnAntes = EngineOf(state).TurnNumber;
+
+        Play(state, Host, "mismo-id", 5, MoveKind.Reveal, 4, SearchStart + 1);
+
+        // La jugada se aplicó una sola vez y quedó registrada bajo su requestId.
+        Assert.That(state.Moves.Count(m => m.RequestId == "mismo-id"), Is.EqualTo(1));
+
+        // El módulo detecta el reintento ANTES de volver a aplicar: mismo requestId, mismo resultado.
+        var processed = MatchRules.FindProcessed(state, "mismo-id");
+        Assert.That(processed!.ResultingTurnNumber, Is.EqualTo(turnAntes + 1));
+
+        // No se pierde la jugada ni se pasan dos turnos: la partida sigue exactamente donde quedó.
+        Assert.That(EngineOf(state).TurnNumber, Is.EqualTo(turnAntes + 1));
+    }
+
+    [Test]
     public void UnaJugadaRechazadaNoSeRegistraComoAplicada()
     {
         var state = Searching();
@@ -624,6 +643,25 @@ public class MatchRulesTests
         Assert.That(state.Status, Is.EqualTo(MatchStatus.Finished));
         Assert.That(state.WinnerSeat, Is.EqualTo(1));
         Assert.That(state.EndReason, Is.EqualTo("forfeit"));
+    }
+
+    [Test]
+    public void AbandonarEnTuPropioTurnoTambienDaLaVictoriaAlRivalYRevelaLasMinas()
+    {
+        var state = Searching();
+
+        var result = Play(state, Host, "ff", 5, MoveKind.Forfeit, -1, SearchStart + 1);
+
+        Assert.That(result.Outcome, Is.EqualTo(MatchOutcome.Applied));
+        Assert.That(state.Status, Is.EqualTo(MatchStatus.Finished));
+        Assert.That(state.WinnerSeat, Is.EqualTo(2));
+        Assert.That(state.EndReason, Is.EqualTo("forfeit"));
+
+        foreach (var viewer in new[] { Host, Guest })
+        {
+            Assert.That(ViewFor(state, viewer).Mines, Is.EquivalentTo(new[] { 0, 1, 2, 3 }),
+                "al terminar se ven todas las minas en ambos clientes");
+        }
     }
 
     [Test]
