@@ -27,7 +27,7 @@
     el motor es C# puro.
   -->
   <ItemGroup>
-    <Compile Include="..\..\..\WipedOut-Game3D\Assets\Tests\EditMode\*.cs" LinkBase="EngineTests" />
+    <Compile Include="..\..\..\Assets\Tests\EditMode\*.cs" LinkBase="EngineTests" />
   </ItemGroup>
 
   <!--
@@ -35,8 +35,8 @@
     compilan aqui para comprobar que el JSON del servidor encaja con ellos.
   -->
   <ItemGroup>
-    <Compile Include="..\..\..\WipedOut-Game3D\Assets\Scripts\Online\OnlineMatchModels.cs" LinkBase="ClientModels" />
-    <Compile Include="..\..\..\WipedOut-Game3D\Assets\Scripts\Online\GameProtocol.cs" LinkBase="ClientModels" />
+    <Compile Include="..\..\..\Assets\Scripts\Online\OnlineMatchModels.cs" LinkBase="ClientModels" />
+    <Compile Include="..\..\..\Assets\Scripts\Online\GameProtocol.cs" LinkBase="ClientModels" />
   </ItemGroup>
 
   <ItemGroup>

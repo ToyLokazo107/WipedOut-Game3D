@@ -19,7 +19,7 @@
     El juego las usa desde Unity y el servidor las compila desde aqui, asi que no pueden divergir.
   -->
   <ItemGroup>
-    <Compile Include="..\..\..\WipedOut-Game3D\Assets\Scripts\Rules\*.cs" LinkBase="Rules" />
+    <Compile Include="..\..\..\Assets\Scripts\Rules\*.cs" LinkBase="Rules" />
   </ItemGroup>
 
   <PropertyGroup>
