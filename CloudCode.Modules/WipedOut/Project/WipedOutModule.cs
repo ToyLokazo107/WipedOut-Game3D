@@ -206,6 +206,48 @@ public class WipedOutModule
         return Respond(state, playerId, MatchOutcome.Applied, string.Empty, now);
     }
 
+    /// <summary>
+    /// Actualiza la posicion del jugador sobre el tablero (movimiento WASD). No es una jugada: no toca
+    /// las reglas de minas, el turno ni el historial. Solo se guarda la ultima posicion (last-write-wins).
+    /// </summary>
+    [CloudCodeFunction("MovePlayer")]
+    public async Task<string> MovePlayer(IExecutionContext context, string matchId, float x, float z)
+    {
+        var playerId = RequirePlayer(context);
+        var code = RequireCode(matchId);
+        var now = DateTime.UtcNow;
+
+        var stored = await LoadOrThrowAsync(context, code);
+        var state = stored.State;
+        RequireParticipant(state, playerId);
+
+        var seat = state.SeatOf(playerId);
+        if (seat == 1)
+        {
+            state.HostX = x;
+            state.HostZ = z;
+        }
+        else if (seat == 2)
+        {
+            state.GuestX = x;
+            state.GuestZ = z;
+        }
+
+        var nowUnix = MatchRules.Unix(now);
+        state.SetLastActivityOfSeat(seat, nowUnix);
+        state.UpdatedAtUnixSeconds = nowUnix;
+
+        if (!await m_Repository.TrySaveAsync(context, state, stored.WriteLock))
+        {
+            // Moverse es last-write-wins: si otra escritura gano, basta devolver el estado real.
+            var fresh = await LoadOrThrowAsync(context, code);
+            return Respond(fresh.State, playerId, MatchOutcome.Applied, string.Empty, now);
+        }
+
+        await NotifyOpponentAsync(context, state, playerId);
+        return Respond(state, playerId, MatchOutcome.Applied, string.Empty, now);
+    }
+
     private async Task NotifyOpponentAsync(IExecutionContext context, MatchState state, string callerId)
     {
         var opponentId = state.OpponentOf(callerId);

@@ -72,4 +72,9 @@ public class MatchView
 
     /// <summary>Quien coloco cada mina de <see cref="Mines"/>, en el mismo orden.</summary>
     public int[]? MineOwners { get; set; }
+
+    /// <summary>Posicion (x, z) del rival sobre el tablero, para el avatar remoto.</summary>
+    public float RivalX { get; set; }
+
+    public float RivalZ { get; set; }
 }

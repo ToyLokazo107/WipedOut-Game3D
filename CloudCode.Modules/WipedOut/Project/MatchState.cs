@@ -139,6 +139,16 @@ public class MatchState
     public long CreatedAtUnixSeconds { get; set; }
     public long UpdatedAtUnixSeconds { get; set; }
 
+    /// <summary>Posicion (x, z) del anfitrion sobre el tablero. La actualiza <c>MovePlayer</c>.</summary>
+    public float HostX { get; set; }
+
+    public float HostZ { get; set; }
+
+    /// <summary>Posicion (x, z) del invitado sobre el tablero. La actualiza <c>MovePlayer</c>.</summary>
+    public float GuestX { get; set; }
+
+    public float GuestZ { get; set; }
+
     public int SeatOf(string playerId)
     {
         if (playerId.Length == 0) return 0;

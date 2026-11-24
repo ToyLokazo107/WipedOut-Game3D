@@ -87,6 +87,10 @@ namespace WipedOut.Online
         public int[] mines;
         public int[] mineOwners;
 
+        /// <summary>Posición (x, z) del rival sobre el tablero, para mover su avatar remoto.</summary>
+        public float rivalX;
+        public float rivalZ;
+
         public bool IsMyTurn => status == OnlineStatus.Playing && currentSeat == mySeat && currentSeat != 0;
 
         public bool IsFinished => status == OnlineStatus.Finished;

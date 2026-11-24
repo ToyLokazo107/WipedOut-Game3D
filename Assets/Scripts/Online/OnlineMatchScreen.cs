@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 namespace WipedOut.Online
@@ -20,6 +21,9 @@ namespace WipedOut.Online
         private const float PollSecondsWithPush = 10f;
         private const float PollSecondsWithoutPush = 3f;
         private const float WakeRetrySeconds = 3f;
+
+        // Mientras el anfitrión espera al rival (WaitingForGuest) sondea rápido para detectar su entrada.
+        private const float HostWaitingPollSeconds = 1f;
 
         // Misma duración que MatchRules.GraceSeconds del servidor (+0,5 s de colchón).
         private const double GraceBeforeClaimingTimeout = 3.5;
@@ -42,6 +46,7 @@ namespace WipedOut.Online
 
         private Font font;
         private GameObject overlay;
+        private Image overlayBackground;
         private GameObject lobbyPanel;
         private GameObject matchPanel;
 
@@ -90,7 +95,21 @@ namespace WipedOut.Online
             service.Pump();
 
             OnlineMatchView view = service.Current;
-            if (overlay == null || !overlay.activeSelf || view == null || view.status != OnlineStatus.Playing)
+            if (overlay == null || !overlay.activeSelf || view == null)
+            {
+                SetText(timerText, string.Empty);
+                return;
+            }
+
+            // El anfitrión espera al rival: sondea rápido (~1 s) para detectar cuándo entra y arranca.
+            if (view.status == OnlineStatus.WaitingForGuest)
+            {
+                SetText(timerText, string.Empty);
+                PollAtInterval(HostWaitingPollSeconds);
+                return;
+            }
+
+            if (view.status != OnlineStatus.Playing)
             {
                 SetText(timerText, string.Empty);
                 return;
@@ -119,12 +138,17 @@ namespace WipedOut.Online
                 return;
             }
 
-            // Sondeo de respaldo: un push puede perderse, el estado leído no.
-            if (Time.realtimeSinceStartup >= nextPoll && !service.IsBusy)
-            {
-                nextPoll = Time.realtimeSinceStartup + (service.IsSubscribed ? PollSecondsWithPush : PollSecondsWithoutPush);
-                _ = service.RefreshAsync();
-            }
+            PollAtInterval(service.IsSubscribed ? PollSecondsWithPush : PollSecondsWithoutPush);
+        }
+
+        /// <summary>Sondeo de respaldo: un push puede perderse, el estado leído no.</summary>
+        private void PollAtInterval(float seconds)
+        {
+            if (Time.realtimeSinceStartup < nextPoll || service.IsBusy)
+                return;
+
+            nextPoll = Time.realtimeSinceStartup + seconds;
+            _ = service.RefreshAsync();
         }
 
         private double Elapsed()
@@ -149,7 +173,33 @@ namespace WipedOut.Online
 
         private void Close()
         {
-            overlay.SetActive(false);
+            OnlineMatchView view = service.Current;
+
+            // Si hay una partida en curso, solo se esconde el panel (se sigue jugando en el tablero).
+            if (view != null && !view.IsFinished)
+            {
+                overlay.SetActive(false);
+                return;
+            }
+
+            // Sin partida activa: volver al menú principal en lugar de dejar al jugador mirando el suelo.
+            SceneManager.LoadScene("MainMenu");
+        }
+
+        /// <summary>Activa la pantalla y muestra el overlay (para entrar a SampleScene).</summary>
+        public void Show()
+        {
+            gameObject.SetActive(true);
+            if (overlay != null)
+                overlay.SetActive(true);
+        }
+
+        /// <summary>Oculta el overlay y desactiva la pantalla (para volver al menú sin dejar el lobby encima).</summary>
+        public void Hide()
+        {
+            if (overlay != null)
+                overlay.SetActive(false);
+            gameObject.SetActive(false);
         }
 
         private async void OnCreateClicked()
@@ -243,10 +293,12 @@ namespace WipedOut.Online
             if (view == null)
             {
                 SetText(lobbyStatus, "Crea una sala o únete con el código de tu rival.");
+                ApplyBoardMode(false);
                 return;
             }
 
-            nextPoll = Time.realtimeSinceStartup + PollSecondsWithPush;
+            nextPoll = Time.realtimeSinceStartup
+                + (view.status == OnlineStatus.WaitingForGuest ? HostWaitingPollSeconds : PollSecondsWithPush);
             SetText(roomText, "ROOM " + view.matchCode);
             SetText(levelText, view.level > 0 ? "LEVEL " + view.level + "  (" + view.size + "x" + view.size + ")" : string.Empty);
             SetText(livesText, LivesLine(view));
@@ -259,6 +311,24 @@ namespace WipedOut.Online
 
             validateButton.interactable = view.IsMyTurn && view.phase == OnlinePhase.Search;
             forfeitButton.gameObject.SetActive(view.status == OnlineStatus.Playing);
+
+            ApplyBoardMode(view.status == OnlineStatus.Playing);
+        }
+
+        /// <summary>
+        /// En plena partida (fase activa) se esconde el fondo opaco y la cuadrícula 2D para dejar ver la
+        /// escena 3D (SampleScene); solo queda el HUD informativo en los bordes y los botones LEAVE/FORFEIT.
+        /// </summary>
+        private void ApplyBoardMode(bool activeGame)
+        {
+            if (overlayBackground != null)
+                overlayBackground.enabled = !activeGame;
+
+            if (validateButton != null)
+                validateButton.gameObject.SetActive(!activeGame);
+
+            if (activeGame && gridRoot != null)
+                gridRoot.gameObject.SetActive(false);
         }
 
         private static string PhaseLine(OnlineMatchView view)
@@ -499,7 +569,8 @@ namespace WipedOut.Online
 
             overlay = new GameObject("OnlineOverlay", typeof(RectTransform));
             overlay.transform.SetParent(transform, false);
-            overlay.AddComponent<Image>().color = Background;
+            overlayBackground = overlay.AddComponent<Image>();
+            overlayBackground.color = Background;
             Stretch((RectTransform)overlay.transform);
 
             lobbyPanel = NewPanel("Lobby");
@@ -634,20 +705,34 @@ namespace WipedOut.Online
     }
 
     /// <summary>
-    /// Arranque automático: añade el botón ONLINE a cualquier escena sin editarla. Para quitarlo basta con
-    /// borrar este método (o esta clase): el resto del juego no depende de él.
+    /// Arranque automático: al cargar la SampleScene crea (o activa) el lobby online y, al salir de ella,
+    /// lo oculta para no tapar el menú principal. Para quitarlo basta con borrar esta clase: el resto del
+    /// juego no depende de él.
     /// </summary>
     public static class OnlineBootstrap
     {
         private static OnlineMatchScreen instance;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void Init()
         {
-            if (instance == null)
+            SceneManager.sceneLoaded += OnSceneLoaded;
+        }
+
+        private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            // Fuera de la SampleScene no hay lobby online: se oculta para no tapar el menú principal.
+            if (scene.name != "SampleScene")
             {
-                instance = OnlineMatchScreen.Create();
+                if (instance != null)
+                    instance.Hide();
+                return;
             }
+
+            if (instance == null)
+                instance = OnlineMatchScreen.Create();
+            else
+                instance.Show();
         }
     }
 }

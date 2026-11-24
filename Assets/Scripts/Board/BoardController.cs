@@ -2,6 +2,10 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+#if ENABLE_INPUT_SYSTEM
+using UnityEngine.InputSystem;
+#endif
+using UnityEngine.EventSystems;
 using WipedOut.Core;
 using WipedOut.Models;
 using WipedOut.Online;
@@ -51,6 +55,16 @@ namespace WipedOut.Board
         [SerializeField] private PlayerController3D player1Controller;
         [SerializeField] private PlayerController3D player2Controller;
 
+        [Header("Movimiento online")]
+        [SerializeField, Min(0.05f), Tooltip("Cada cuántos segundos se envía la posición local al servidor.")]
+        private float moveSendInterval = 0.2f;
+
+        [SerializeField, Min(0.1f), Tooltip("Velocidad de interpolación del avatar remoto.")]
+        private float avatarMoveSpeed = 12f;
+
+        [SerializeField, Min(0f), Tooltip("Margen que se resta a las cotas del piso (Map) para no caer al vacío.")]
+        private float mapMargin = 0.5f;
+
         /// <summary>Se dispara al terminar de generar el tablero.</summary>
         public event Action<int, int> OnBoardGenerated;
 
@@ -67,6 +81,9 @@ namespace WipedOut.Board
         public int GridHeight { get; private set; }
         public bool HasBoard => tiles != null;
 
+        /// <summary>Distancia de mundo entre casillas consecutivas (tamaño + separación).</summary>
+        public float TileStep => Mathf.Max(0.01f, tileSize + tileSpacing);
+
         private TileData[,] tiles;
         private Transform tilesRoot;
         private MaterialPropertyBlock propBlock;
@@ -82,6 +99,16 @@ namespace WipedOut.Board
 
         private OnlineMatchScreen onlineScreen;
 
+        private OnlineMatchService onlineService;
+        private Transform remoteAvatar;
+        private Vector3 remoteTarget;
+        private float remoteAvatarHeight = 0.5f;
+        private int spawnedSeat = -1;
+        private float nextMoveSend;
+        private Vector3 lastSentPosition = new Vector3(float.NaN, float.NaN, float.NaN);
+        private Vector2 movementBounds = new Vector2(9.5f, 9.5f);
+        private readonly Dictionary<Collider, Vector2Int> tileCells = new Dictionary<Collider, Vector2Int>();
+
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
 
@@ -89,6 +116,7 @@ namespace WipedOut.Board
         {
             propBlock = new MaterialPropertyBlock();
             ResolveControllers();
+            ResolveMapBounds();
             SetBoardVisible(false);
         }
 
@@ -117,8 +145,15 @@ namespace WipedOut.Board
             {
                 onlineScreen = OnlineMatchScreen.Instance;
                 if (onlineScreen != null)
+                {
                     onlineScreen.Service.ViewChanged += ApplyOnlineView;
+                    onlineService = onlineScreen.Service;
+                }
             }
+
+            SyncLocalMovement();
+            UpdateRemoteAvatar();
+            HandleTileClick();
         }
 
         /// <summary>Genera una grilla vacía cuadrada. Las minas y el revelado los decide el motor.</summary>
@@ -178,6 +213,8 @@ namespace WipedOut.Board
 
             ApplyCellStates(size, view.cells, view.mines, view.mineOwners, minesVisible);
             SetBoardVisible(true);
+
+            SetupPlayers(view);
         }
 
         private void ApplyCellStates(int gridSize, int[] states, int[] mines, int[] mineOwners, bool minesVisible)
@@ -404,6 +441,13 @@ namespace WipedOut.Board
                     {
                         tileInstance = tileObject
                     };
+
+                    Collider tileCollider = tileObject.GetComponent<Collider>();
+                    if (tileCollider != null)
+                    {
+                        tileCollider.enabled = true;
+                        tileCells[tileCollider] = new Vector2Int(x, y);
+                    }
                 }
             }
         }
@@ -464,6 +508,7 @@ namespace WipedOut.Board
 
             tilesRoot = null;
             tiles = null;
+            tileCells.Clear();
         }
 
         /// <summary>Muestra u oculta el tablero 3D y los jugadores. Oculta hasta que entra una partida online.</summary>
@@ -477,6 +522,218 @@ namespace WipedOut.Board
 
             if (tilesRoot != null)
                 tilesRoot.gameObject.SetActive(visible);
+        }
+
+        // --------------------------------------------------- jugadores online (spawn y movimiento)
+
+        /// <summary>
+        /// Coloca al jugador local en una esquina del piso (fuera de las grillas) y al avatar del rival en la
+        /// esquina diagonalmente opuesta, según el asiento: P1 (Host) en la esquina sur-oeste, P2 (Guest) en la
+        /// nor-este. Activa la cámara en primera persona y la orienta hacia el tablero central.
+        /// </summary>
+        private void SetupPlayers(OnlineMatchView view)
+        {
+            bool firstSpawn = spawnedSeat != view.mySeat;
+            spawnedSeat = view.mySeat;
+
+            if (player1Controller == null)
+                ResolveControllers();
+
+            if (player1Controller != null)
+            {
+                player1Controller.ConfigureBoard(GridWidth, GridHeight, TileStep);
+                player1Controller.SetMovementBounds(movementBounds.x, movementBounds.y);
+                player1Controller.SetInputEnabled(true);
+
+                if (firstSpawn)
+                {
+                    // Esquina del piso, fuera de las grillas (con margen interior para no caer del borde).
+                    float x = spawnedSeat == 1 ? -movementBounds.x : movementBounds.x;
+                    float z = spawnedSeat == 1 ? movementBounds.y : -movementBounds.y;
+                    player1Controller.TeleportTo(new Vector3(x, player1Controller.transform.position.y, z));
+                    player1Controller.SetupFirstPerson();
+                    player1Controller.LookTowards(Vector3.zero);
+                }
+            }
+
+            // El avatar remoto usa la misma altura que el jugador local.
+            remoteAvatarHeight = player1Controller != null ? player1Controller.transform.position.y : remoteAvatarHeight;
+
+            if (firstSpawn)
+                remoteTarget = RivalCornerPosition();
+            else
+                remoteTarget = new Vector3(view.rivalX, remoteAvatarHeight, view.rivalZ);
+
+            EnsureRemoteAvatar();
+        }
+
+        /// <summary>Esquina opuesta a la del jugador local, donde aparece el avatar del rival.</summary>
+        private Vector3 RivalCornerPosition()
+        {
+            float x = spawnedSeat == 1 ? movementBounds.x : -movementBounds.x;
+            float z = spawnedSeat == 1 ? -movementBounds.y : movementBounds.y;
+            return new Vector3(x, remoteAvatarHeight, z);
+        }
+
+        /// <summary>Crea el avatar del rival (un objeto visual simple, sin input) en el extremo opuesto.</summary>
+        private void EnsureRemoteAvatar()
+        {
+            if (remoteAvatar != null)
+                return;
+
+            GameObject avatar = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+            avatar.name = "RemoteRivalAvatar";
+
+            Transform parent = boardRoot != null ? boardRoot : transform;
+            avatar.transform.SetParent(parent, false);
+            avatar.transform.localScale = new Vector3(0.6f, 1f, 0.6f);
+
+            Collider collider = avatar.GetComponent<Collider>();
+            if (collider != null)
+                collider.enabled = false;
+
+            Renderer renderer = avatar.GetComponent<Renderer>();
+            if (renderer != null)
+            {
+                propBlock.Clear();
+                propBlock.SetColor(BaseColorId, new Color(1f, 0.25f, 0.2f));
+                propBlock.SetColor(ColorId, new Color(1f, 0.25f, 0.2f));
+                renderer.SetPropertyBlock(propBlock);
+            }
+
+            remoteAvatarHeight = player1Controller != null ? player1Controller.transform.position.y : 0.5f;
+
+            remoteAvatar = avatar.transform;
+            remoteAvatar.position = new Vector3(remoteTarget.x, remoteAvatarHeight, remoteTarget.z);
+        }
+
+        /// <summary>Envía la posición local al servidor (throttled) solo cuando el jugador se mueve.</summary>
+        private void SyncLocalMovement()
+        {
+            if (onlineService == null || player1Controller == null)
+                return;
+
+            OnlineMatchView view = onlineService.Current;
+            if (view == null || view.status != OnlineStatus.Playing)
+                return;
+
+            if (Time.realtimeSinceStartup < nextMoveSend)
+                return;
+
+            Vector3 position = player1Controller.BoardPosition;
+            if ((position - lastSentPosition).sqrMagnitude < 0.0001f)
+                return;
+
+            lastSentPosition = position;
+            nextMoveSend = Time.realtimeSinceStartup + moveSendInterval;
+            _ = onlineService.MoveAsync(position.x, position.z);
+        }
+
+        /// <summary>Interpola el avatar remoto hacia la última posición recibida del rival.</summary>
+        private void UpdateRemoteAvatar()
+        {
+            if (remoteAvatar == null)
+                return;
+
+            remoteAvatar.position = Vector3.MoveTowards(
+                remoteAvatar.position,
+                remoteTarget,
+                avatarMoveSpeed * Time.deltaTime);
+        }
+
+        /// <summary>Calcula las cotas amplias del piso (Map) para que el jugador no se caiga al vacío.</summary>
+        private void ResolveMapBounds()
+        {
+            GameObject map = GameObject.Find("Map");
+            if (map == null)
+                return;
+
+            Collider collider = map.GetComponent<Collider>();
+            if (collider == null)
+                return;
+
+            Bounds bounds = collider.bounds;
+            float halfX = Mathf.Max(0.1f, bounds.extents.x - mapMargin);
+            float halfZ = Mathf.Max(0.1f, bounds.extents.z - mapMargin);
+            movementBounds = new Vector2(halfX, halfZ);
+        }
+
+        /// <summary>
+        /// Interacción con el ratón: un clic izquierdo sobre una casilla 3D dispara la acción de la fase
+        /// actual (colocar una mina en la colocación, o destapar en la búsqueda).
+        /// </summary>
+        private void HandleTileClick()
+        {
+            if (onlineService == null)
+                return;
+
+            OnlineMatchView view = onlineService.Current;
+            if (view == null || view.status != OnlineStatus.Playing || !view.IsMyTurn)
+                return;
+
+            // Si el clic cae sobre un elemento de UI (botón LEAVE/FORFEIT), no se toca el mundo 3D.
+            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+                return;
+
+            if (!TryGetMouseRay(out Ray ray))
+                return;
+
+            // Se recorre por distancia para saltar colliders que no son casillas (el avatar propio, el piso...).
+            Vector2Int cell = default;
+            bool found = false;
+            foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
+            {
+                if (tileCells.TryGetValue(hit.collider, out cell))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                return;
+
+            int cellIndex = GameManager.CellIndex(cell.x, cell.y, GridWidth);
+
+            if (view.phase == OnlinePhase.Placement)
+                _ = onlineService.PlaceMineAsync(cellIndex);
+            else if (view.phase == OnlinePhase.Search)
+                _ = onlineService.RevealAsync(cellIndex);
+        }
+
+        private bool TryGetMouseRay(out Ray ray)
+        {
+            Camera camera = Camera.main;
+            if (camera == null)
+            {
+                ray = default;
+                return false;
+            }
+
+#if ENABLE_INPUT_SYSTEM
+            Mouse mouse = Mouse.current;
+            if (mouse == null || !mouse.leftButton.wasPressedThisFrame)
+            {
+                ray = default;
+                return false;
+            }
+
+            Vector2 screen = mouse.position.ReadValue();
+            ray = camera.ScreenPointToRay(new Vector3(screen.x, screen.y, 0f));
+            return true;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+            if (!Input.GetMouseButtonDown(0))
+            {
+                ray = default;
+                return false;
+            }
+
+            ray = camera.ScreenPointToRay(Input.mousePosition);
+            return true;
+#else
+            ray = default;
+            return false;
+#endif
         }
 
         private void CaptureSelections()

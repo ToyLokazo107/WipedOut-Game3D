@@ -118,6 +118,28 @@ namespace WipedOut.Online
             return PlayMoveAsync(KindForfeit, -1, "forfeit:" + Current?.matchCode);
         }
 
+        /// <summary>
+        /// Actualiza mi posicion sobre el tablero (movimiento WASD). Es silencioso: no dispara
+        /// <see cref="ViewChanged"/> para no re-renderizar la UI en cada paso; la posicion del rival
+        /// llega por el push/polling habitual.
+        /// </summary>
+        public async Task MoveAsync(float x, float z)
+        {
+            if (Current == null)
+                return;
+
+            await CallAsync(
+                "MovePlayer",
+                null,
+                new Dictionary<string, object>
+                {
+                    { "matchId", Current.matchCode },
+                    { "x", x },
+                    { "z", z }
+                },
+                accept: false);
+        }
+
         private Task<OnlineMatchView> PlayMoveAsync(string kind, int cell, string actionKey)
         {
             if (Current == null)
@@ -316,7 +338,7 @@ namespace WipedOut.Online
         // ------------------------------------------------------------------ llamadas
 
         private async Task<OnlineMatchView> CallAsync(
-            string function, string actionKey, Dictionary<string, object> args)
+            string function, string actionKey, Dictionary<string, object> args, bool accept = true)
         {
             if (!IsReady)
             {
@@ -362,7 +384,8 @@ namespace WipedOut.Online
                     pendingRequestIds.Remove(actionKey);
                 }
 
-                Accept(view);
+                if (accept)
+                    Accept(view);
                 return view;
             }
             catch (CloudCodeRateLimitedException exception)

@@ -64,5 +64,18 @@ namespace Unity.Services.CloudCode.GeneratedBindings
                     {"matchId", matchId},
                 });
         }
+
+        public async Task<string> MovePlayer(string matchId, float x, float z)
+        {
+            return await k_Service.CallModuleEndpointAsync<string>(
+                "WipedOut",
+                "MovePlayer",
+                new Dictionary<string, object>()
+                {
+                    {"matchId", matchId},
+                    {"x", x},
+                    {"z", z},
+                });
+        }
     }
 }

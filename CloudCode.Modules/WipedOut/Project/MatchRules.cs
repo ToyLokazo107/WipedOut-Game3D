@@ -324,6 +324,9 @@ public static class MatchRules
             EndReason = state.EndReason
         };
 
+        view.RivalX = view.MySeat == 1 ? state.GuestX : state.HostX;
+        view.RivalZ = view.MySeat == 1 ? state.GuestZ : state.HostZ;
+
         var replay = Replay(state);
         if (replay.Engine == null)
         {
