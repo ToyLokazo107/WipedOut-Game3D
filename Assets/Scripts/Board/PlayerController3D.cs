@@ -3,13 +3,15 @@ using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
+using UnityEngine.EventSystems;
 
 namespace WipedOut.Board
 {
     /// <summary>
-    /// Controla al ÚNICO jugador local: se mueve libremente con WASD por toda la plataforma (relativo a su
-    /// orientación, para que W avance hacia delante) y mira en primera persona con el ratón (rotación
-    /// horizontal sobre el jugador y vertical limitada sobre la cámara, manteniendo pulsado el botón derecho).
+    /// Controla al ÚNICO jugador local en primera persona (FPS): el cursor queda bloqueado y se gira
+    /// libremente con el ratón, se mueve con WASD por toda la plataforma (relativo a su orientación) y
+    /// expone su posición para sincronizarla con el rival. La tecla Escape libera el cursor para poder
+    /// pulsar la UI; un clic fuera de la UI (o volver a pulsar Escape) lo vuelve a bloquear.
     /// </summary>
     [DisallowMultipleComponent]
     public class PlayerController3D : MonoBehaviour
@@ -25,10 +27,10 @@ namespace WipedOut.Board
         private PlayerNumber playerNumber = PlayerNumber.Player1;
 
         [Header("Grilla")]
-        [SerializeField, Min(1), Tooltip("Ancho de la grilla. BoardController lo actualiza al generar el tablero.")]
+        [SerializeField, Min(1), Tooltip("Ancho de la grilla (compatibilidad con el modo local).")]
         private int gridWidth = 2;
 
-        [SerializeField, Min(1), Tooltip("Alto de la grilla. BoardController lo actualiza al generar el tablero.")]
+        [SerializeField, Min(1), Tooltip("Alto de la grilla (compatibilidad con el modo local).")]
         private int gridHeight = 2;
 
         [Header("Movimiento")]
@@ -51,9 +53,6 @@ namespace WipedOut.Board
         private bool inputEnabled = true;
         private float tileStep = 1.08f;
 
-        /// <summary>Cotas de la grilla (para derivar la casilla enfocada).</summary>
-        private Vector2 gridHalfExtents;
-
         /// <summary>Cotas amplias del piso/mapa (para acotar el movimiento libre, no la grilla).</summary>
         private Vector2 movementHalfExtents = new Vector2(9.5f, 9.5f);
 
@@ -62,6 +61,7 @@ namespace WipedOut.Board
         private float yaw;
         private float pitch;
         private bool firstPersonReady;
+        private bool cursorLocked;
 
         /// <summary>Jugador asociado a esta instancia.</summary>
         public PlayerNumber Player => playerNumber;
@@ -75,7 +75,7 @@ namespace WipedOut.Board
         /// <summary>Alto actual de la grilla.</summary>
         public int GridHeight => gridHeight;
 
-        /// <summary>Casilla enfocada actualmente (derivada de la posición del avatar).</summary>
+        /// <summary>Casilla enfocada (compatibilidad con el modo local; ya no se deriva de la posición).</summary>
         public Vector2Int SelectedTile => selectedTile;
 
         /// <summary>Posición de mundo del avatar (el valor (x, z) que se sincroniza con el rival).</summary>
@@ -84,25 +84,24 @@ namespace WipedOut.Board
         /// <summary>Indica si esta instancia está leyendo el teclado.</summary>
         public bool InputEnabled => inputEnabled;
 
-        /// <summary>Se dispara cuando la casilla enfocada cambia.</summary>
-        public event Action<PlayerController3D, Vector2Int> OnSelectionChanged;
+        /// <summary>Indica si el cursor está bloqueado (modo FPS).</summary>
+        public bool IsCursorLocked => cursorLocked;
 
         /// <summary>Se dispara al confirmar con Espacio (usado por el modo local).</summary>
         public event Action<PlayerController3D, Vector2Int> OnTileSelected;
 
         private void Awake()
         {
-            RecomputeGridExtents();
             selectedTile = ClampToGrid(new Vector2Int(gridWidth / 2, gridHeight / 2));
-        }
-
-        private void Start()
-        {
-            OnSelectionChanged?.Invoke(this, selectedTile);
         }
 
         private void Update()
         {
+            if (!firstPersonReady)
+                return;
+
+            HandleCursorToggle();
+
             if (!inputEnabled)
                 return;
 
@@ -113,16 +112,20 @@ namespace WipedOut.Board
                 ConfirmSelection();
         }
 
+        private void OnDisable()
+        {
+            SetCursorLocked(false);
+        }
+
         private void OnValidate()
         {
             gridWidth = Mathf.Max(1, gridWidth);
             gridHeight = Mathf.Max(1, gridHeight);
-            RecomputeGridExtents();
         }
 
         // ------------------------------------------------------------------ primera persona
 
-        /// <summary>Acopla la cámara a la cabeza del jugador y oculta su propia malla. Idempotente.</summary>
+        /// <summary>Acopla la cámara a la cabeza del jugador, oculta su malla y bloquea el cursor. Idempotente.</summary>
         public void SetupFirstPerson()
         {
             if (firstPersonReady)
@@ -138,6 +141,7 @@ namespace WipedOut.Board
 
             HideOwnBody();
             firstPersonReady = true;
+            SetCursorLocked(true);
         }
 
         /// <summary>Oculta la malla del jugador local (solo en este cliente) para no tapar la vista.</summary>
@@ -145,6 +149,12 @@ namespace WipedOut.Board
         {
             foreach (Renderer renderer in GetComponentsInChildren<Renderer>())
                 renderer.enabled = false;
+        }
+
+        /// <summary>Libera el cursor (para salir a la UI). No lo bloquea.</summary>
+        public void UnlockCursor()
+        {
+            SetCursorLocked(false);
         }
 
         /// <summary>Orienta al jugador (guiñada y cabeceo) para mirar hacia un punto del mundo.</summary>
@@ -162,12 +172,30 @@ namespace WipedOut.Board
             ApplyRotation();
         }
 
+        private void HandleCursorToggle()
+        {
+            if (ReadTogglePressed())
+            {
+                SetCursorLocked(!cursorLocked);
+                return;
+            }
+
+            // Con el cursor libre, un clic fuera de la UI lo vuelve a bloquear.
+            if (!cursorLocked && ReadConfirmClick() && !IsPointerOverUI())
+                SetCursorLocked(true);
+        }
+
+        private void SetCursorLocked(bool locked)
+        {
+            cursorLocked = locked;
+            Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
+            Cursor.visible = !locked;
+        }
+
         private void HandleLook()
         {
-            if (!firstPersonReady)
-                return;
-
-            if (!TryReadLookDelta(out Vector2 delta))
+            Vector2 delta = ReadMouseDelta();
+            if (delta == Vector2.zero)
                 return;
 
             yaw += delta.x * mouseSensitivity;
@@ -196,7 +224,6 @@ namespace WipedOut.Board
                 return;
 
             transform.position = ClampMovement(transform.position + direction * (moveSpeed * Time.deltaTime));
-            UpdateSelectedTileFromPosition();
         }
 
         private Vector3 MovementDirection(Vector2 input)
@@ -215,13 +242,13 @@ namespace WipedOut.Board
 
         // ------------------------------------------------------------------ grilla
 
-        /// <summary>Actualiza el tamaño de la grilla (para derivar la casilla enfocada).</summary>
+        /// <summary>Actualiza el tamaño de la grilla (compatibilidad con el modo local).</summary>
         public void ConfigureBoard(int width, int height, float step)
         {
             gridWidth = Mathf.Max(1, width);
             gridHeight = Mathf.Max(1, height);
             tileStep = Mathf.Max(0.01f, step);
-            RecomputeGridExtents();
+            selectedTile = ClampToGrid(selectedTile);
         }
 
         /// <summary>Actualiza el tamaño de la grilla (compatibilidad con el modo local).</summary>
@@ -229,7 +256,6 @@ namespace WipedOut.Board
         {
             gridWidth = Mathf.Max(1, width);
             gridHeight = Mathf.Max(1, height);
-            RecomputeGridExtents();
 
             if (resetSelection)
                 ResetSelection();
@@ -251,6 +277,7 @@ namespace WipedOut.Board
         [ContextMenu("Centrar selección")]
         public void ResetSelection()
         {
+            selectedTile = new Vector2Int(gridWidth / 2, gridHeight / 2);
             TeleportTo(new Vector3(0f, transform.position.y, 0f));
         }
 
@@ -258,20 +285,12 @@ namespace WipedOut.Board
         public void TeleportTo(Vector3 worldPosition)
         {
             transform.position = ClampMovement(new Vector3(worldPosition.x, transform.position.y, worldPosition.z));
-            UpdateSelectedTileFromPosition();
         }
 
         /// <summary>Confirma la casilla enfocada (modo local).</summary>
         public void ConfirmSelection()
         {
             OnTileSelected?.Invoke(this, selectedTile);
-        }
-
-        private void RecomputeGridExtents()
-        {
-            gridHalfExtents = new Vector2(
-                (gridWidth - 1) * tileStep * 0.5f,
-                (gridHeight - 1) * tileStep * 0.5f);
         }
 
         private Vector2Int ClampToGrid(Vector2Int position)
@@ -288,20 +307,6 @@ namespace WipedOut.Board
                 Mathf.Clamp(position.x, -movementHalfExtents.x, movementHalfExtents.x),
                 position.y,
                 Mathf.Clamp(position.z, -movementHalfExtents.y, movementHalfExtents.y));
-        }
-
-        private void UpdateSelectedTileFromPosition()
-        {
-            Vector3 position = transform.position;
-            int x = Mathf.RoundToInt((position.x + gridHalfExtents.x) / tileStep);
-            int y = Mathf.RoundToInt((position.z + gridHalfExtents.y) / tileStep);
-            Vector2Int cell = ClampToGrid(new Vector2Int(x, y));
-
-            if (cell == selectedTile)
-                return;
-
-            selectedTile = cell;
-            OnSelectionChanged?.Invoke(this, selectedTile);
         }
 
         // ------------------------------------------------------------------ entrada
@@ -333,29 +338,43 @@ namespace WipedOut.Board
 #endif
         }
 
-        private bool TryReadLookDelta(out Vector2 delta)
+        private Vector2 ReadMouseDelta()
         {
 #if ENABLE_INPUT_SYSTEM
             Mouse mouse = Mouse.current;
-            if (mouse == null || !mouse.rightButton.isPressed)
-            {
-                delta = Vector2.zero;
-                return false;
-            }
-
-            delta = mouse.delta.ReadValue();
-            return true;
+            if (mouse == null)
+                return Vector2.zero;
+            return mouse.delta.ReadValue();
 #elif ENABLE_LEGACY_INPUT_MANAGER
-            if (!Input.GetMouseButton(1))
-            {
-                delta = Vector2.zero;
-                return false;
-            }
-
-            delta = new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y"));
-            return true;
+            return new Vector2(Input.GetAxis("Mouse X"), Input.GetAxis("Mouse Y"));
 #else
-            delta = Vector2.zero;
+            return Vector2.zero;
+#endif
+        }
+
+        private bool ReadTogglePressed()
+        {
+#if ENABLE_INPUT_SYSTEM
+            Keyboard keyboard = Keyboard.current;
+            if (keyboard != null)
+                return keyboard.escapeKey.wasPressedThisFrame || keyboard.tabKey.wasPressedThisFrame;
+#endif
+
+#if ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetKeyDown(KeyCode.Escape) || Input.GetKeyDown(KeyCode.Tab);
+#else
+            return false;
+#endif
+        }
+
+        private bool ReadConfirmClick()
+        {
+#if ENABLE_INPUT_SYSTEM
+            Mouse mouse = Mouse.current;
+            return mouse != null && mouse.leftButton.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetMouseButtonDown(0);
+#else
             return false;
 #endif
         }
@@ -373,6 +392,11 @@ namespace WipedOut.Board
 #else
             return false;
 #endif
+        }
+
+        private static bool IsPointerOverUI()
+        {
+            return EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
         }
     }
 }

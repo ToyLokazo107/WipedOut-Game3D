@@ -5,7 +5,6 @@ using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
-using UnityEngine.EventSystems;
 using WipedOut.Core;
 using WipedOut.Models;
 using WipedOut.Online;
@@ -50,6 +49,8 @@ namespace WipedOut.Board
         [Header("Feedback")]
         [SerializeField, Min(0f)] private float invalidFlashDuration = 0.15f;
         [SerializeField, Range(0f, 1f)] private float selectionTint = 0.55f;
+        [SerializeField, Range(0f, 1f), Tooltip("Intensidad del resaltado de la casilla bajo la mira.")]
+        private float hoverTint = 0.25f;
 
         [Header("Referencias (opcional)")]
         [SerializeField] private PlayerController3D player1Controller;
@@ -92,10 +93,7 @@ namespace WipedOut.Board
         private int[] ownerBuffer = Array.Empty<int>();
         private bool minesVisibleBuffer;
 
-        private Vector2Int player1Selection;
-        private Vector2Int player2Selection;
-        private bool hasPlayer1Selection;
-        private bool hasPlayer2Selection;
+        private Vector2Int hoveredCell = new Vector2Int(-1, -1);
 
         private OnlineMatchScreen onlineScreen;
 
@@ -153,6 +151,7 @@ namespace WipedOut.Board
 
             SyncLocalMovement();
             UpdateRemoteAvatar();
+            UpdateHover();
             HandleTileClick();
         }
 
@@ -170,7 +169,6 @@ namespace WipedOut.Board
             }
 
             BuildBoard(size, size);
-            CaptureSelections();
 
             stateBuffer = new int[size * size];
             ownerBuffer = new int[size * size];
@@ -252,25 +250,6 @@ namespace WipedOut.Board
             RefreshAllTiles();
         }
 
-        private void HandleSelectionChanged(PlayerController3D controller, Vector2Int position)
-        {
-            if (controller == null)
-                return;
-
-            if (controller.PlayerIndex == 1)
-            {
-                player1Selection = position;
-                hasPlayer1Selection = true;
-            }
-            else if (controller.PlayerIndex == 2)
-            {
-                player2Selection = position;
-                hasPlayer2Selection = true;
-            }
-
-            RefreshAllTiles();
-        }
-
         private void HandleTileSelected(PlayerController3D controller, Vector2Int position)
         {
             if (controller == null || GameManager.Instance == null)
@@ -345,11 +324,8 @@ namespace WipedOut.Board
 
             Color color = GetCellColor(state, owner, minesVisibleBuffer);
 
-            if (hasPlayer1Selection && tile.gridPosition == player1Selection)
-                color = Color.Lerp(color, player1SelectionColor, selectionTint);
-
-            if (hasPlayer2Selection && tile.gridPosition == player2Selection)
-                color = Color.Lerp(color, player2SelectionColor, selectionTint);
+            if (hoveredCell.x >= 0 && tile.gridPosition == hoveredCell)
+                color = Color.Lerp(color, Color.white, hoverTint);
 
             ApplyTileColor(tile, color);
         }
@@ -659,26 +635,27 @@ namespace WipedOut.Board
         }
 
         /// <summary>
-        /// Interacción con el ratón: un clic izquierdo sobre una casilla 3D dispara la acción de la fase
-        /// actual (colocar una mina en la colocación, o destapar en la búsqueda).
+        /// Interacción con el ratón: con el cursor bloqueado (FPS), un clic izquierdo dispara la casilla que
+        /// está bajo la mira central (raycast desde el centro de la pantalla) según la fase actual.
         /// </summary>
         private void HandleTileClick()
         {
             if (onlineService == null)
                 return;
 
+            if (Cursor.lockState != CursorLockMode.Locked)
+                return;
+
             OnlineMatchView view = onlineService.Current;
             if (view == null || view.status != OnlineStatus.Playing || !view.IsMyTurn)
                 return;
 
-            // Si el clic cae sobre un elemento de UI (botón LEAVE/FORFEIT), no se toca el mundo 3D.
-            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject())
+            if (!ReadLeftClick())
                 return;
 
-            if (!TryGetMouseRay(out Ray ray))
+            if (!TryGetCenterRay(out Ray ray))
                 return;
 
-            // Se recorre por distancia para saltar colliders que no son casillas (el avatar propio, el piso...).
             Vector2Int cell = default;
             bool found = false;
             foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
@@ -701,7 +678,8 @@ namespace WipedOut.Board
                 _ = onlineService.RevealAsync(cellIndex);
         }
 
-        private bool TryGetMouseRay(out Ray ray)
+        /// <summary>Raycast desde el centro exacto de la pantalla (donde está la mira).</summary>
+        private bool TryGetCenterRay(out Ray ray)
         {
             Camera camera = Camera.main;
             if (camera == null)
@@ -710,42 +688,48 @@ namespace WipedOut.Board
                 return false;
             }
 
-#if ENABLE_INPUT_SYSTEM
-            Mouse mouse = Mouse.current;
-            if (mouse == null || !mouse.leftButton.wasPressedThisFrame)
-            {
-                ray = default;
-                return false;
-            }
-
-            Vector2 screen = mouse.position.ReadValue();
-            ray = camera.ScreenPointToRay(new Vector3(screen.x, screen.y, 0f));
+            ray = camera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
             return true;
-#elif ENABLE_LEGACY_INPUT_MANAGER
-            if (!Input.GetMouseButtonDown(0))
-            {
-                ray = default;
-                return false;
-            }
-
-            ray = camera.ScreenPointToRay(Input.mousePosition);
-            return true;
-#else
-            ray = default;
-            return false;
-#endif
         }
 
-        private void CaptureSelections()
+        /// <summary>Resalta suavemente la casilla que está bajo la mira central.</summary>
+        private void UpdateHover()
         {
-            hasPlayer1Selection = player1Controller != null;
-            hasPlayer2Selection = player2Controller != null;
+            if (Cursor.lockState != CursorLockMode.Locked || !TryGetCenterRay(out Ray ray))
+            {
+                SetHover(new Vector2Int(-1, -1));
+                return;
+            }
 
-            if (hasPlayer1Selection)
-                player1Selection = player1Controller.SelectedTile;
+            Vector2Int cell = new Vector2Int(-1, -1);
+            foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
+            {
+                if (tileCells.TryGetValue(hit.collider, out cell))
+                    break;
+            }
 
-            if (hasPlayer2Selection)
-                player2Selection = player2Controller.SelectedTile;
+            SetHover(cell);
+        }
+
+        private void SetHover(Vector2Int cell)
+        {
+            if (cell == hoveredCell)
+                return;
+
+            hoveredCell = cell;
+            RefreshAllTiles();
+        }
+
+        private static bool ReadLeftClick()
+        {
+#if ENABLE_INPUT_SYSTEM
+            Mouse mouse = Mouse.current;
+            return mouse != null && mouse.leftButton.wasPressedThisFrame;
+#elif ENABLE_LEGACY_INPUT_MANAGER
+            return Input.GetMouseButtonDown(0);
+#else
+            return false;
+#endif
         }
 
         private void ResolveControllers()
@@ -769,16 +753,12 @@ namespace WipedOut.Board
         {
             if (player1Controller != null)
             {
-                player1Controller.OnSelectionChanged -= HandleSelectionChanged;
-                player1Controller.OnSelectionChanged += HandleSelectionChanged;
                 player1Controller.OnTileSelected -= HandleTileSelected;
                 player1Controller.OnTileSelected += HandleTileSelected;
             }
 
             if (player2Controller != null)
             {
-                player2Controller.OnSelectionChanged -= HandleSelectionChanged;
-                player2Controller.OnSelectionChanged += HandleSelectionChanged;
                 player2Controller.OnTileSelected -= HandleTileSelected;
                 player2Controller.OnTileSelected += HandleTileSelected;
             }
@@ -787,16 +767,10 @@ namespace WipedOut.Board
         private void UnsubscribeFromControllers()
         {
             if (player1Controller != null)
-            {
-                player1Controller.OnSelectionChanged -= HandleSelectionChanged;
                 player1Controller.OnTileSelected -= HandleTileSelected;
-            }
 
             if (player2Controller != null)
-            {
-                player2Controller.OnSelectionChanged -= HandleSelectionChanged;
                 player2Controller.OnTileSelected -= HandleTileSelected;
-            }
         }
     }
 }

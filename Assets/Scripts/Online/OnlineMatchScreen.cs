@@ -47,6 +47,7 @@ namespace WipedOut.Online
         private Font font;
         private GameObject overlay;
         private Image overlayBackground;
+        private Image crosshairImage;
         private GameObject lobbyPanel;
         private GameObject matchPanel;
 
@@ -294,6 +295,7 @@ namespace WipedOut.Online
             {
                 SetText(lobbyStatus, "Crea una sala o únete con el código de tu rival.");
                 ApplyBoardMode(false);
+                ReleaseCursor();
                 return;
             }
 
@@ -313,6 +315,9 @@ namespace WipedOut.Online
             forfeitButton.gameObject.SetActive(view.status == OnlineStatus.Playing);
 
             ApplyBoardMode(view.status == OnlineStatus.Playing);
+
+            if (view.status != OnlineStatus.Playing)
+                ReleaseCursor();
         }
 
         /// <summary>
@@ -327,8 +332,18 @@ namespace WipedOut.Online
             if (validateButton != null)
                 validateButton.gameObject.SetActive(!activeGame);
 
+            if (crosshairImage != null)
+                crosshairImage.enabled = activeGame;
+
             if (activeGame && gridRoot != null)
                 gridRoot.gameObject.SetActive(false);
+        }
+
+        /// <summary>Restaura el cursor del sistema (para volver al lobby o a la UI).</summary>
+        private static void ReleaseCursor()
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
 
         private static string PhaseLine(OnlineMatchView view)
@@ -603,6 +618,17 @@ namespace WipedOut.Online
             validateButton.GetComponent<Image>().color = DangerColor;
             forfeitButton = CreateButton(matchPanel.transform, "FORFEIT", new Vector2(0f, 0f), new Vector2(190f, 80f), new Vector2(300f, 90f), OnForfeitClicked);
             CreateButton(matchPanel.transform, "LEAVE", new Vector2(1f, 0f), new Vector2(-190f, 80f), new Vector2(300f, 90f), OnLeaveClicked);
+
+            // Mira central (punto): visible solo durante la partida activa.
+            var crosshairGo = new GameObject("Crosshair", typeof(RectTransform));
+            crosshairGo.transform.SetParent(overlay.transform, false);
+            RectTransform crosshairRect = (RectTransform)crosshairGo.transform;
+            crosshairRect.anchorMin = crosshairRect.anchorMax = new Vector2(0.5f, 0.5f);
+            crosshairRect.sizeDelta = new Vector2(6f, 6f);
+            crosshairRect.anchoredPosition = Vector2.zero;
+            crosshairImage = crosshairGo.AddComponent<Image>();
+            crosshairImage.color = Color.white;
+            crosshairImage.raycastTarget = false;
 
             // La pantalla online es ahora la entrada directa: se muestra el lobby (WIPED OUT? ONLINE)
             // nada más cargar la escena, sin un botón ONLINE flotante.
