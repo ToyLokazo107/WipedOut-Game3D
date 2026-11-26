@@ -301,8 +301,8 @@ namespace WipedOut.Online
 
             nextPoll = Time.realtimeSinceStartup
                 + (view.status == OnlineStatus.WaitingForGuest ? HostWaitingPollSeconds : PollSecondsWithPush);
-            SetText(roomText, "ROOM " + view.matchCode);
-            SetText(levelText, view.level > 0 ? "LEVEL " + view.level + "  (" + view.size + "x" + view.size + ")" : string.Empty);
+            SetText(roomText, "SALA " + view.matchCode);
+            SetText(levelText, view.level > 0 ? "NIVEL " + view.level + "  (" + view.size + "x" + view.size + ")" : string.Empty);
             SetText(livesText, LivesLine(view));
             SetText(phaseText, PhaseLine(view));
             SetText(infoText, !string.IsNullOrEmpty(view.message) && view.outcome != OnlineOutcome.Applied
@@ -350,26 +350,26 @@ namespace WipedOut.Online
         {
             if (view.status == OnlineStatus.WaitingForGuest)
             {
-                return "WAITING FOR YOUR RIVAL  -  CODE " + view.matchCode;
+                return "ESPERANDO A TU RIVAL  -  CÓDIGO " + view.matchCode;
             }
 
             if (view.IsFinished)
             {
-                return view.IWon ? "YOU WIN!" : "YOU LOSE";
+                return view.IWon ? "¡GANASTE!" : "¡PERDISTE!";
             }
 
             switch (view.phase)
             {
                 case OnlinePhase.Placement:
                     return view.IsMyTurn
-                        ? "PLACE YOUR MINES (" + view.PlacedOfSeat(view.mySeat) + "/" + view.minesPerPlayer + ")"
-                        : "RIVAL IS PLACING MINES - MEMORIZE THEM";
+                        ? "COLOCA TUS MINAS (" + view.PlacedOfSeat(view.mySeat) + "/" + view.minesPerPlayer + ")"
+                        : "EL RIVAL ESTÁ COLOCANDO MINAS - MEMORÍZALAS";
                 case OnlinePhase.Memorize:
-                    return "REMEMBER!";
+                    return "¡MEMORIZA!";
                 case OnlinePhase.Search:
                     return view.IsMyTurn
-                        ? "YOUR TURN: PICK A WHITE TILE OR PRESS THE RED BUTTON"
-                        : "RIVAL'S TURN";
+                        ? "TU TURNO - BUSCA LAS CASILLAS SEGURAS"
+                        : "TURNO DEL RIVAL";
                 default:
                     return string.Empty;
             }
@@ -470,8 +470,8 @@ namespace WipedOut.Online
 
         private static string LivesLine(OnlineMatchView view)
         {
-            string me1 = view.mySeat == 1 ? " (YOU)" : string.Empty;
-            string me2 = view.mySeat == 2 ? " (YOU)" : string.Empty;
+            string me1 = view.mySeat == 1 ? " (TÚ)" : string.Empty;
+            string me2 = view.mySeat == 2 ? " (TÚ)" : string.Empty;
             return "P1" + me1 + " x" + Mathf.Max(0, view.lives1) + "        P2" + me2 + " x" + Mathf.Max(0, view.lives2);
         }
 
@@ -591,11 +591,11 @@ namespace WipedOut.Online
             lobbyPanel = NewPanel("Lobby");
             CreateLabel(lobbyPanel.transform, "WIPED OUT? ONLINE", 80, new Vector2(0.5f, 0.5f), new Vector2(0f, 320f), new Vector2(1400f, 120f));
             lobbyStatus = CreateLabel(lobbyPanel.transform, string.Empty, 36, new Vector2(0.5f, 0.5f), new Vector2(0f, 220f), new Vector2(1600f, 90f));
-            profileInput = CreateInput(lobbyPanel.transform, "PROFILE (opcional)", 30, new Vector2(0.5f, 0.5f), new Vector2(0f, 120f), new Vector2(560f, 70f), 30, InputField.ContentType.Standard);
-            CreateButton(lobbyPanel.transform, "CREATE ROOM", new Vector2(0.5f, 0.5f), new Vector2(0f, 10f), new Vector2(560f, 100f), OnCreateClicked);
-            codeInput = CreateInput(lobbyPanel.transform, "CODE", 52, new Vector2(0.5f, 0.5f), new Vector2(-170f, -120f), new Vector2(300f, 100f), 4, InputField.ContentType.Alphanumeric);
-            CreateButton(lobbyPanel.transform, "JOIN", new Vector2(0.5f, 0.5f), new Vector2(170f, -120f), new Vector2(240f, 100f), OnJoinClicked);
-            CreateButton(lobbyPanel.transform, "CLOSE", new Vector2(0.5f, 0.5f), new Vector2(0f, -300f), new Vector2(320f, 90f), Close);
+            profileInput = CreateInput(lobbyPanel.transform, "PERFIL (opcional)", 30, new Vector2(0.5f, 0.5f), new Vector2(0f, 120f), new Vector2(560f, 70f), 30, InputField.ContentType.Standard);
+            CreateButton(lobbyPanel.transform, "CREAR SALA", new Vector2(0.5f, 0.5f), new Vector2(0f, 10f), new Vector2(560f, 100f), OnCreateClicked);
+            codeInput = CreateInput(lobbyPanel.transform, "CÓDIGO", 52, new Vector2(0.5f, 0.5f), new Vector2(-170f, -120f), new Vector2(300f, 100f), 4, InputField.ContentType.Alphanumeric);
+            CreateButton(lobbyPanel.transform, "UNIRSE", new Vector2(0.5f, 0.5f), new Vector2(170f, -120f), new Vector2(240f, 100f), OnJoinClicked);
+            CreateButton(lobbyPanel.transform, "CERRAR", new Vector2(0.5f, 0.5f), new Vector2(0f, -300f), new Vector2(320f, 90f), Close);
 
             matchPanel = NewPanel("Match");
             roomText = CreateLabel(matchPanel.transform, string.Empty, 34, new Vector2(0.5f, 1f), new Vector2(0f, -35f), new Vector2(900f, 50f));
@@ -614,10 +614,10 @@ namespace WipedOut.Online
             GridLayoutGroup layout = gridGo.AddComponent<GridLayoutGroup>();
             layout.childAlignment = TextAnchor.MiddleCenter;
 
-            validateButton = CreateButton(matchPanel.transform, "RED BUTTON: NO SAFE TILES LEFT", new Vector2(0.5f, 0f), new Vector2(0f, 80f), new Vector2(720f, 90f), OnValidateClicked);
+            validateButton = CreateButton(matchPanel.transform, "BOTÓN ROJO: NO QUEDAN CASILLAS SEGURAS", new Vector2(0.5f, 0f), new Vector2(0f, 80f), new Vector2(720f, 90f), OnValidateClicked);
             validateButton.GetComponent<Image>().color = DangerColor;
-            forfeitButton = CreateButton(matchPanel.transform, "FORFEIT", new Vector2(0f, 0f), new Vector2(190f, 80f), new Vector2(300f, 90f), OnForfeitClicked);
-            CreateButton(matchPanel.transform, "LEAVE", new Vector2(1f, 0f), new Vector2(-190f, 80f), new Vector2(300f, 90f), OnLeaveClicked);
+            forfeitButton = CreateButton(matchPanel.transform, "RENDIRSE", new Vector2(0f, 0f), new Vector2(190f, 80f), new Vector2(300f, 90f), OnForfeitClicked);
+            CreateButton(matchPanel.transform, "SALIR", new Vector2(1f, 0f), new Vector2(-190f, 80f), new Vector2(300f, 90f), OnLeaveClicked);
 
             // Mira central (punto): visible solo durante la partida activa.
             var crosshairGo = new GameObject("Crosshair", typeof(RectTransform));
