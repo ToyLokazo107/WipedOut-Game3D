@@ -30,12 +30,14 @@ namespace WipedOut.Online
 
         private static readonly Color Background = new Color(0.12f, 0.14f, 0.18f, 0.97f);
         private static readonly Color ButtonColor = new Color(0.25f, 0.42f, 0.75f);
-        private static readonly Color DangerColor = new Color(0.80f, 0.20f, 0.20f);
         private static readonly Color HiddenCell = new Color(0.93f, 0.93f, 0.93f);
         private static readonly Color SafeCell = new Color(0.45f, 0.80f, 0.55f);
         private static readonly Color BoomCell = new Color(0.97f, 0.50f, 0.20f);
         private static readonly Color Player1Color = new Color(0.35f, 0.55f, 0.97f);
         private static readonly Color Player2Color = new Color(0.97f, 0.40f, 0.40f);
+        private static readonly Color VictoryColor = new Color(1f, 0.84f, 0.2f, 1f);
+        private static readonly Color DefeatColor = new Color(0.95f, 0.25f, 0.25f, 1f);
+        private static readonly Color ResultBackdrop = new Color(0f, 0f, 0f, 0.82f);
 
         private readonly OnlineMatchService service = new OnlineMatchService();
         private readonly List<Image> cellImages = new List<Image>();
@@ -50,6 +52,9 @@ namespace WipedOut.Online
         private Image crosshairImage;
         private GameObject lobbyPanel;
         private GameObject matchPanel;
+        private GameObject resultPanel;
+        private Text resultTitle;
+        private Text resultSubtitle;
 
         private Text lobbyStatus;
         private InputField codeInput;
@@ -61,7 +66,6 @@ namespace WipedOut.Online
         private Text phaseText;
         private Text timerText;
         private Text infoText;
-        private Button validateButton;
         private Button forfeitButton;
         private RectTransform gridRoot;
         private int builtSize = -1;
@@ -193,6 +197,11 @@ namespace WipedOut.Online
             gameObject.SetActive(true);
             if (overlay != null)
                 overlay.SetActive(true);
+
+            // Al volver a la escena se re-renderiza con el estado actual: así se oculta cualquier
+            // panel de resultado residual de la partida anterior y solo reaparece si la sala activa
+            // realmente terminó (view != null && view.IsFinished).
+            Render(service.Current);
         }
 
         /// <summary>Oculta el overlay y desactiva la pantalla (para volver al menú sin dejar el lobby encima).</summary>
@@ -254,11 +263,6 @@ namespace WipedOut.Online
             }
         }
 
-        private void OnValidateClicked()
-        {
-            _ = service.ValidateAsync();
-        }
-
         private void OnForfeitClicked()
         {
             _ = service.ForfeitAsync();
@@ -269,6 +273,13 @@ namespace WipedOut.Online
             service.Leave();
             builtSize = -1;
             Render(null);
+        }
+
+        private void OnReturnToMenuClicked()
+        {
+            service.Leave();
+            builtSize = -1;
+            SceneManager.LoadScene("MainMenu");
         }
 
         private void RequestResync()
@@ -288,12 +299,25 @@ namespace WipedOut.Online
                 return;
             }
 
+            bool finished = view != null && view.IsFinished;
+
             lobbyPanel.SetActive(view == null);
-            matchPanel.SetActive(view != null);
+            matchPanel.SetActive(view != null && !finished);
+            resultPanel.SetActive(finished);
 
             if (view == null)
             {
                 SetText(lobbyStatus, "Crea una sala o únete con el código de tu rival.");
+                ApplyBoardMode(false);
+                ReleaseCursor();
+                return;
+            }
+
+            if (finished)
+            {
+                ShowResult(view);
+                if (gridRoot != null)
+                    gridRoot.gameObject.SetActive(false);
                 ApplyBoardMode(false);
                 ReleaseCursor();
                 return;
@@ -311,13 +335,31 @@ namespace WipedOut.Online
 
             RenderBoard(view);
 
-            validateButton.interactable = view.IsMyTurn && view.phase == OnlinePhase.Search;
             forfeitButton.gameObject.SetActive(view.status == OnlineStatus.Playing);
 
             ApplyBoardMode(view.status == OnlineStatus.Playing);
 
             if (view.status != OnlineStatus.Playing)
                 ReleaseCursor();
+        }
+
+        /// <summary>Rellena el panel de fin de partida según si el jugador local ganó o perdió.</summary>
+        private void ShowResult(OnlineMatchView view)
+        {
+            bool won = view.IWon;
+
+            if (resultTitle != null)
+            {
+                resultTitle.text = won ? "¡VICTORIA!" : "¡HAS PERDIDO!";
+                resultTitle.color = won ? VictoryColor : DefeatColor;
+            }
+
+            if (resultSubtitle != null)
+            {
+                resultSubtitle.text = won
+                    ? "¡Has sobrevivido a todos los niveles!"
+                    : "Te quedaste sin vidas";
+            }
         }
 
         /// <summary>
@@ -328,9 +370,6 @@ namespace WipedOut.Online
         {
             if (overlayBackground != null)
                 overlayBackground.enabled = !activeGame;
-
-            if (validateButton != null)
-                validateButton.gameObject.SetActive(!activeGame);
 
             if (crosshairImage != null)
                 crosshairImage.enabled = activeGame;
@@ -614,8 +653,6 @@ namespace WipedOut.Online
             GridLayoutGroup layout = gridGo.AddComponent<GridLayoutGroup>();
             layout.childAlignment = TextAnchor.MiddleCenter;
 
-            validateButton = CreateButton(matchPanel.transform, "BOTÓN ROJO: NO QUEDAN CASILLAS SEGURAS", new Vector2(0.5f, 0f), new Vector2(0f, 80f), new Vector2(720f, 90f), OnValidateClicked);
-            validateButton.GetComponent<Image>().color = DangerColor;
             forfeitButton = CreateButton(matchPanel.transform, "RENDIRSE", new Vector2(0f, 0f), new Vector2(190f, 80f), new Vector2(300f, 90f), OnForfeitClicked);
             CreateButton(matchPanel.transform, "SALIR", new Vector2(1f, 0f), new Vector2(-190f, 80f), new Vector2(300f, 90f), OnLeaveClicked);
 
@@ -629,6 +666,16 @@ namespace WipedOut.Online
             crosshairImage = crosshairGo.AddComponent<Image>();
             crosshairImage.color = Color.white;
             crosshairImage.raycastTarget = false;
+
+            // Panel de resultado (fin de partida): sustituye al HUD cuando la partida termina.
+            resultPanel = NewPanel("Result");
+            Image resultBackdrop = resultPanel.AddComponent<Image>();
+            resultBackdrop.color = ResultBackdrop;
+            resultBackdrop.raycastTarget = false;
+            resultTitle = CreateLabel(resultPanel.transform, string.Empty, 120, new Vector2(0.5f, 0.5f), new Vector2(0f, 120f), new Vector2(1500f, 180f));
+            resultSubtitle = CreateLabel(resultPanel.transform, string.Empty, 44, new Vector2(0.5f, 0.5f), new Vector2(0f, 0f), new Vector2(1600f, 80f));
+            CreateButton(resultPanel.transform, "VOLVER AL MENÚ", new Vector2(0.5f, 0.5f), new Vector2(0f, -160f), new Vector2(560f, 100f), OnReturnToMenuClicked);
+            resultPanel.SetActive(false);
 
             // La pantalla online es ahora la entrada directa: se muestra el lobby (WIPED OUT? ONLINE)
             // nada más cargar la escena, sin un botón ONLINE flotante.

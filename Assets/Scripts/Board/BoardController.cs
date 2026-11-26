@@ -550,6 +550,9 @@ namespace WipedOut.Board
 
         // --------------------------------------------------- jugadores online (spawn y movimiento)
 
+        /// <summary>El controlador del único jugador local (P1 o P2 según el asiento que asigne el servidor).</summary>
+        private PlayerController3D LocalPlayer => player1Controller != null ? player1Controller : player2Controller;
+
         /// <summary>
         /// Coloca al jugador local en una esquina del piso (fuera de las grillas) y al avatar del rival en la
         /// esquina diagonalmente opuesta, según el asiento: P1 (Host) en la esquina sur-oeste, P2 (Guest) en la
@@ -560,28 +563,38 @@ namespace WipedOut.Board
             bool firstSpawn = spawnedSeat != view.mySeat;
             spawnedSeat = view.mySeat;
 
-            if (player1Controller == null)
-                ResolveControllers();
-
-            if (player1Controller != null)
+            // Este cliente controla a UN solo jugador local, sea cual sea el asiento (P1 o P2) que le
+            // asignó el servidor. El controlador se resuelve y se activa con independencia del asiento.
+            PlayerController3D localPlayer = player1Controller != null ? player1Controller : player2Controller;
+            if (localPlayer == null)
             {
-                player1Controller.ConfigureBoard(GridWidth, GridHeight, TileStep);
-                player1Controller.SetMovementBounds(movementBounds.x, movementBounds.y);
-                player1Controller.SetInputEnabled(true);
+                ResolveControllers();
+                localPlayer = player1Controller != null ? player1Controller : player2Controller;
+            }
+
+            if (localPlayer != null)
+            {
+                localPlayer.gameObject.SetActive(true);
+                localPlayer.ConfigureBoard(GridWidth, GridHeight, TileStep);
+                localPlayer.SetMovementBounds(movementBounds.x, movementBounds.y);
+                localPlayer.SetInputEnabled(true);
 
                 if (firstSpawn)
                 {
                     // Esquina del piso, fuera de las grillas (con margen interior para no caer del borde).
                     float x = spawnedSeat == 1 ? -movementBounds.x : movementBounds.x;
                     float z = spawnedSeat == 1 ? movementBounds.y : -movementBounds.y;
-                    player1Controller.TeleportTo(new Vector3(x, player1Controller.transform.position.y, z));
-                    player1Controller.SetupFirstPerson();
-                    player1Controller.LookTowards(Vector3.zero);
+                    localPlayer.TeleportTo(new Vector3(x, localPlayer.transform.position.y, z));
+                    localPlayer.LookTowards(Vector3.zero);
                 }
+
+                // La cámara en primera persona y el bloqueo del cursor se garantizan para P1 y P2:
+                // es idempotente, así que se llama en cada vista activa (no solo en el primer spawn).
+                localPlayer.SetupFirstPerson();
             }
 
             // El avatar remoto usa la misma altura que el jugador local.
-            remoteAvatarHeight = player1Controller != null ? player1Controller.transform.position.y : remoteAvatarHeight;
+            remoteAvatarHeight = localPlayer != null ? localPlayer.transform.position.y : remoteAvatarHeight;
 
             if (firstSpawn)
                 remoteTarget = RivalCornerPosition();
@@ -616,16 +629,29 @@ namespace WipedOut.Board
             if (collider != null)
                 collider.enabled = false;
 
+            // La primitiva usa el material "Standard" por defecto, que en URP se ve magenta. Se sustituye
+            // por un material con el shader Lit de URP (con fallback a Standard) y su color de jugador.
             Renderer renderer = avatar.GetComponent<Renderer>();
             if (renderer != null)
             {
-                propBlock.Clear();
-                propBlock.SetColor(BaseColorId, new Color(1f, 0.25f, 0.2f));
-                propBlock.SetColor(ColorId, new Color(1f, 0.25f, 0.2f));
-                renderer.SetPropertyBlock(propBlock);
+                Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+                if (shader == null)
+                    shader = Shader.Find("Standard");
+
+                if (shader != null)
+                {
+                    Material material = new Material(shader);
+                    Color avatarColor = new Color(1f, 0.25f, 0.2f);
+                    if (material.HasProperty(BaseColorId))
+                        material.SetColor(BaseColorId, avatarColor);
+                    if (material.HasProperty(ColorId))
+                        material.SetColor(ColorId, avatarColor);
+                    renderer.material = material;
+                }
             }
 
-            remoteAvatarHeight = player1Controller != null ? player1Controller.transform.position.y : 0.5f;
+            PlayerController3D localPlayer = LocalPlayer;
+            remoteAvatarHeight = localPlayer != null ? localPlayer.transform.position.y : 0.5f;
 
             remoteAvatar = avatar.transform;
             remoteAvatar.position = new Vector3(remoteTarget.x, remoteAvatarHeight, remoteTarget.z);
@@ -634,7 +660,8 @@ namespace WipedOut.Board
         /// <summary>Envía la posición local al servidor (throttled) solo cuando el jugador se mueve.</summary>
         private void SyncLocalMovement()
         {
-            if (onlineService == null || player1Controller == null)
+            PlayerController3D localPlayer = LocalPlayer;
+            if (onlineService == null || localPlayer == null)
                 return;
 
             OnlineMatchView view = onlineService.Current;
@@ -644,7 +671,7 @@ namespace WipedOut.Board
             if (Time.realtimeSinceStartup < nextMoveSend)
                 return;
 
-            Vector3 position = player1Controller.BoardPosition;
+            Vector3 position = localPlayer.BoardPosition;
             if ((position - lastSentPosition).sqrMagnitude < 0.0001f)
                 return;
 
@@ -839,8 +866,9 @@ namespace WipedOut.Board
             if (redButtonPending)
             {
                 bool expired = Time.realtimeSinceStartup >= redButtonConfirmDeadline;
-                bool walkedAway = player1Controller != null
-                    && Vector3.Distance(player1Controller.transform.position, redButton.transform.position) > redButtonMaxDistance;
+                PlayerController3D localPlayer = LocalPlayer;
+                bool walkedAway = localPlayer != null
+                    && Vector3.Distance(localPlayer.transform.position, redButton.transform.position) > redButtonMaxDistance;
 
                 if (expired || walkedAway)
                 {

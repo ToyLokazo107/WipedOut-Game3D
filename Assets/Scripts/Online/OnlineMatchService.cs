@@ -83,11 +83,13 @@ namespace WipedOut.Online
 
         public Task<OnlineMatchView> CreateAsync()
         {
+            Leave();
             return CallAsync("CreateMatch", "create", new Dictionary<string, object>());
         }
 
         public Task<OnlineMatchView> JoinAsync(string matchCode)
         {
+            Leave();
             string code = (matchCode ?? string.Empty).Trim().ToUpperInvariant();
             return CallAsync(
                 "JoinMatch",
@@ -201,6 +203,7 @@ namespace WipedOut.Online
         public void Leave()
         {
             Current = null;
+            CurrentReceivedAt = 0f;
             refreshRequested = false;
             pendingRequestIds.Clear();
         }
