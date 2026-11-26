@@ -239,6 +239,48 @@ namespace WipedOut.Tests.EditMode
             Assert.That(match.CurrentSeat, Is.EqualTo(2), "las jugadas rechazadas no pasan el turno");
         }
 
+        // ------------------------------------------------------------------ destape múltiple
+
+        [Test]
+        public void DestaparVariasCasillasSegurasPasaElTurnoUnaSolaVez()
+        {
+            MatchEngine match = Searching();
+
+            RevealResult result = match.RevealMany(1, new[] { 4, 5, 6 });
+
+            Assert.That(result.Outcome, Is.EqualTo(RevealOutcome.Safe));
+            Assert.That(result.LivesLost, Is.EqualTo(0));
+            Assert.That(match.IsRevealed(4) && match.IsRevealed(5) && match.IsRevealed(6), Is.True);
+            Assert.That(match.CurrentSeat, Is.EqualTo(2), "el turno pasa una sola vez");
+            Assert.That(match.TurnNumber, Is.EqualTo(6));
+        }
+
+        [Test]
+        public void DestaparVariasCasillasConUnaMinaCuestaUnaVidaYTerminaLaRonda()
+        {
+            MatchEngine match = Searching();
+
+            RevealResult result = match.RevealMany(1, new[] { 4, 0 });
+
+            Assert.That(result.Outcome, Is.EqualTo(RevealOutcome.Mine));
+            Assert.That(result.LivesLost, Is.EqualTo(1));
+            Assert.That(result.LevelAdvanced, Is.True);
+            Assert.That(match.Lives1, Is.EqualTo(2));
+            Assert.That(match.Level, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void ElDestapeMultipleRechazaCasillasInvalidasYVacias()
+        {
+            MatchEngine match = Searching();
+
+            Assert.That(match.RevealMany(1, new[] { -1 }).Outcome, Is.EqualTo(RevealOutcome.InvalidCell));
+            Assert.That(match.RevealMany(1, new[] { 99 }).Outcome, Is.EqualTo(RevealOutcome.InvalidCell));
+            Assert.That(match.RevealMany(1, new int[0]).Outcome, Is.EqualTo(RevealOutcome.InvalidCell));
+            Assert.That(match.RevealMany(2, new[] { 4, 5 }).Outcome, Is.EqualTo(RevealOutcome.NotYourTurn));
+            Assert.That(match.TurnNumber, Is.EqualTo(5), "los rechazos no cuentan");
+        }
+
         // ------------------------------------------------------------------- botón rojo
 
         [Test]

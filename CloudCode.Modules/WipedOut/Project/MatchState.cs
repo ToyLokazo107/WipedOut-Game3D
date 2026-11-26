@@ -13,6 +13,9 @@ public static class MoveKind
 {
     public const string Place = "place";
     public const string Reveal = "reveal";
+
+    /// <summary>Destapar VARIAS casillas a la vez (preselección confirmada con el botón rojo).</summary>
+    public const string RevealMany = "reveal_many";
     public const string Validate = "validate";
     public const string Forfeit = "forfeit";
 
@@ -80,6 +83,9 @@ public class MoveRecord
 
     /// <summary>Casilla (en <see cref="MoveKind.Place"/> y <see cref="MoveKind.Reveal"/>); -1 en las demas.</summary>
     public int Cell { get; set; } = -1;
+
+    /// <summary>Casillas destapadas a la vez (en <see cref="MoveKind.RevealMany"/>); vacio en las demas.</summary>
+    public int[] Cells { get; set; } = Array.Empty<int>();
 
     public long AtUnixSeconds { get; set; }
 }

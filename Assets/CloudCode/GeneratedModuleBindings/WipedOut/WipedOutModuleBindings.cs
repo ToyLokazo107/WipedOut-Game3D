@@ -39,7 +39,7 @@ namespace Unity.Services.CloudCode.GeneratedBindings
                 });
         }
 
-        public async Task<string> PlayMove(string matchId, string requestId, int expectedTurnNumber, string kind, int cell)
+        public async Task<string> PlayMove(string matchId, string requestId, int expectedTurnNumber, string kind, int cell, List<int> cells)
         {
             return await k_Service.CallModuleEndpointAsync<string>(
                 "WipedOut",
@@ -51,6 +51,7 @@ namespace Unity.Services.CloudCode.GeneratedBindings
                     {"expectedTurnNumber", expectedTurnNumber},
                     {"kind", kind},
                     {"cell", cell},
+                    {"cells", cells},
                 });
         }
 

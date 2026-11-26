@@ -355,6 +355,77 @@ namespace WipedOut.Rules
         }
 
         /// <summary>
+        /// Fase de búsqueda: el jugador del turno destapa VARIAS casillas a la vez (las preseleccionadas y
+        /// confirmadas con el botón rojo). Si alguna contiene una mina pierde una vida y la ronda termina de
+        /// inmediato; si todas son seguras quedan destapadas y el turno pasa al rival una sola vez.
+        /// </summary>
+        public RevealResult RevealMany(int seat, int[] cells)
+        {
+            if (Phase == Phase.Finished)
+            {
+                return new RevealResult(RevealOutcome.MatchFinished, seat, FirstCell(cells), 0, false, true);
+            }
+
+            if (Phase != Phase.Search)
+            {
+                return new RevealResult(RevealOutcome.WrongPhase, seat, FirstCell(cells), 0, false, false);
+            }
+
+            if (seat != CurrentSeat)
+            {
+                return new RevealResult(RevealOutcome.NotYourTurn, seat, FirstCell(cells), 0, false, false);
+            }
+
+            if (cells == null || cells.Length == 0)
+            {
+                return new RevealResult(RevealOutcome.InvalidCell, seat, -1, 0, false, false);
+            }
+
+            foreach (int cell in cells)
+            {
+                if (!InRange(cell))
+                {
+                    return new RevealResult(RevealOutcome.InvalidCell, seat, cell, 0, false, false);
+                }
+
+                if (revealed[cell])
+                {
+                    return new RevealResult(RevealOutcome.AlreadyRevealed, seat, cell, 0, false, false);
+                }
+            }
+
+            bool hitMine = false;
+            foreach (int cell in cells)
+            {
+                revealed[cell] = true;
+                if (mineOwner[cell] != 0)
+                {
+                    hitMine = true;
+                }
+            }
+
+            TurnNumber++;
+
+            if (hitMine)
+            {
+                bool ended = LoseLife(seat);
+                bool advanced = false;
+                if (!ended)
+                {
+                    Level++;
+                    StartLevel();
+                    advanced = true;
+                }
+
+                return new RevealResult(RevealOutcome.Mine, seat, cells[0], 1, advanced, ended);
+            }
+
+            revealedSafe += cells.Length;
+            CurrentSeat = Other(seat);
+            return new RevealResult(RevealOutcome.Safe, seat, cells[0], 0, false, false);
+        }
+
+        /// <summary>
         /// Botón rojo: el jugador del turno afirma que ya no quedan casillas seguras. Si es verdad, se
         /// completa el nivel sin perder vidas. Si queda alguna, pierde una vida y la ronda sigue (el turno
         /// no cambia).
@@ -492,6 +563,11 @@ namespace WipedOut.Rules
         private bool InRange(int cell)
         {
             return cell >= 0 && cell < CellCount;
+        }
+
+        private static int FirstCell(int[] cells)
+        {
+            return cells != null && cells.Length > 0 ? cells[0] : -1;
         }
 
         private void StartLevel()

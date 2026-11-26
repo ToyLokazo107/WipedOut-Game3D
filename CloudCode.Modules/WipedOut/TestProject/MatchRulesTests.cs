@@ -29,8 +29,8 @@ public class MatchRulesTests
 
     private static MatchEngine EngineOf(MatchState state) => MatchRules.Replay(state).Engine!;
 
-    private static MoveResult Play(MatchState s, string who, string req, int turn, string kind, int cell, double t) =>
-        MatchRules.ApplyPlay(s, who, req, turn, kind, cell, At(t));
+    private static MoveResult Play(MatchState s, string who, string req, int turn, string kind, int cell, double t, int[]? cells = null) =>
+        MatchRules.ApplyPlay(s, who, req, turn, kind, cell, At(t), cells);
 
     private static MatchView ViewFor(MatchState s, string who) =>
         MatchRules.BuildView(s, who, MatchOutcome.Applied, "", T0);
@@ -394,6 +394,59 @@ public class MatchRulesTests
         Assert.That(Play(state, Host, "r1", 0, MoveKind.Place, 0, 0).Outcome, Is.EqualTo(MatchOutcome.NotStarted));
         Assert.That(Play(state, Host, "r2", 0, MoveKind.Validate, -1, 0).Outcome, Is.EqualTo(MatchOutcome.NotStarted));
         Assert.That(Play(state, Host, "r3", 0, MoveKind.Forfeit, -1, 0).Outcome, Is.EqualTo(MatchOutcome.NotStarted));
+    }
+
+    // ----------------------------------------------------- destape múltiple (botón rojo)
+
+    [Test]
+    public void DestaparVariasCasillasDeUnaVezSeAplicaSeRegistraYSeReproduce()
+    {
+        var state = Searching();
+
+        var result = Play(state, Host, "rm", 5, MoveKind.RevealMany, -1, SearchStart + 1, new[] { 4, 5, 6 });
+
+        Assert.That(result.Outcome, Is.EqualTo(MatchOutcome.Applied));
+        Assert.That(state.Moves.Last().Kind, Is.EqualTo(MoveKind.RevealMany));
+        Assert.That(state.Moves.Last().Cells, Is.EqualTo(new[] { 4, 5, 6 }));
+
+        var view = ViewFor(state, Guest);
+        Assert.That(view.CurrentSeat, Is.EqualTo(2), "el turno pasa una sola vez");
+        Assert.That(view.Cells[4], Is.EqualTo(0));
+        Assert.That(view.Cells[5], Is.EqualTo(0));
+        Assert.That(view.Cells[6], Is.EqualTo(0));
+        Assert.That(view.LastEvent!.Kind, Is.EqualTo(MoveKind.RevealMany));
+        Assert.That(view.LastEvent.WasMine, Is.False);
+
+        // El estado guardado y reproducido da el mismo tablero.
+        var replayed = EngineOf(state);
+        Assert.That(replayed.IsRevealed(4) && replayed.IsRevealed(5) && replayed.IsRevealed(6), Is.True);
+    }
+
+    [Test]
+    public void DestaparVariasCasillasConUnaMinaTerminaLaRondaYCuestaUnaVida()
+    {
+        var state = Searching();
+
+        var result = Play(state, Host, "rm", 5, MoveKind.RevealMany, -1, SearchStart + 1, new[] { 4, 0 });
+
+        Assert.That(result.Outcome, Is.EqualTo(MatchOutcome.Applied));
+        var view = ViewFor(state, Host);
+        Assert.That(view.Lives1, Is.EqualTo(2));
+        Assert.That(view.LastEvent!.WasMine, Is.True);
+        Assert.That(view.LastEvent.LevelAdvanced, Is.True);
+        Assert.That(view.Level, Is.EqualTo(2));
+    }
+
+    [Test]
+    public void ElDestapeMultipleSoloSeAceptaEnTuTurnoYEnBusqueda()
+    {
+        var state = Searching();
+        Assert.That(Play(state, Guest, "rm", 5, MoveKind.RevealMany, -1, SearchStart + 1, new[] { 4, 5 }).Outcome,
+            Is.EqualTo(MatchOutcome.NotYourTurn));
+
+        var placing = Placed();
+        Assert.That(Play(placing, Host, "rm", 4, MoveKind.RevealMany, -1, 5, new[] { 4, 5 }).Outcome,
+            Is.EqualTo(MatchOutcome.WrongPhase));
     }
 
     // ------------------------------------------------------------- botón rojo

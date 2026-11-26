@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.UI;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
@@ -51,6 +52,8 @@ namespace WipedOut.Board
         [SerializeField, Range(0f, 1f)] private float selectionTint = 0.55f;
         [SerializeField, Range(0f, 1f), Tooltip("Intensidad del resaltado de la casilla bajo la mira.")]
         private float hoverTint = 0.25f;
+        [SerializeField, Tooltip("Color del resaltado de la casilla disponible bajo la mira.")]
+        private Color hoverColor = new Color(1f, 0.9f, 0.2f, 1f);
 
         [Header("Referencias (opcional)")]
         [SerializeField] private PlayerController3D player1Controller;
@@ -65,6 +68,22 @@ namespace WipedOut.Board
 
         [SerializeField, Min(0f), Tooltip("Margen que se resta a las cotas del piso (Map) para no caer al vacío.")]
         private float mapMargin = 0.5f;
+
+        [Header("Botón rojo (3D)")]
+        [SerializeField, Tooltip("Botón rojo de la escena. Solo es interactivo en la fase de búsqueda.")]
+        private GameObject redButton;
+
+        [SerializeField, Min(0f), Tooltip("Altura del cartel flotante por encima del botón.")]
+        private float redButtonBubbleHeight = 0.25f;
+
+        [SerializeField, Min(0.1f), Tooltip("Segundos para confirmar con el segundo clic.")]
+        private float redButtonConfirmSeconds = 5f;
+
+        [SerializeField, Min(0f), Tooltip("Segundos que dura el aviso de 'marca tus casillas primero'.")]
+        private float redButtonHintSeconds = 3f;
+
+        [SerializeField, Min(0f), Tooltip("Distancia máxima del jugador al botón para mantener la confirmación pendiente.")]
+        private float redButtonMaxDistance = 4f;
 
         /// <summary>Se dispara al terminar de generar el tablero.</summary>
         public event Action<int, int> OnBoardGenerated;
@@ -107,6 +126,19 @@ namespace WipedOut.Board
         private Vector2 movementBounds = new Vector2(9.5f, 9.5f);
         private readonly Dictionary<Collider, Vector2Int> tileCells = new Dictionary<Collider, Vector2Int>();
 
+        private readonly HashSet<int> preselectedCells = new HashSet<int>();
+        private bool redButtonPending;
+        private float redButtonConfirmDeadline;
+        private float redButtonHintUntil;
+
+        private bool redButtonHovered;
+        private Renderer[] redButtonRenderers = Array.Empty<Renderer>();
+
+        private GameObject bubble;
+        private Text bubbleText;
+
+        private static readonly MaterialPropertyBlock EmptyPropBlock = new MaterialPropertyBlock();
+
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
 
@@ -115,6 +147,7 @@ namespace WipedOut.Board
             propBlock = new MaterialPropertyBlock();
             ResolveControllers();
             ResolveMapBounds();
+            ResolveRedButton();
             SetBoardVisible(false);
         }
 
@@ -151,6 +184,7 @@ namespace WipedOut.Board
 
             SyncLocalMovement();
             UpdateRemoteAvatar();
+            UpdateRedButton();
             UpdateHover();
             HandleTileClick();
         }
@@ -324,8 +358,21 @@ namespace WipedOut.Board
 
             Color color = GetCellColor(state, owner, minesVisibleBuffer);
 
+            bool preselected = preselectedCells.Contains(cell);
+            if (preselected)
+                color = Color.Lerp(color, player1SelectionColor, selectionTint);
+
             if (hoveredCell.x >= 0 && tile.gridPosition == hoveredCell)
-                color = Color.Lerp(color, Color.white, hoverTint);
+            {
+                // Solo la casilla disponible (oculta y sin mina colocada) se resalta en amarillo; la ya
+                // marcada conserva su color de selección y apenas se aclara para no ocultar que está elegida.
+                bool available = state == -1 && owner == 0;
+                if (available)
+                {
+                    float strength = preselected ? hoverTint * 0.5f : hoverTint;
+                    color = Color.Lerp(color, hoverColor, strength);
+                }
+            }
 
             ApplyTileColor(tile, color);
         }
@@ -636,7 +683,9 @@ namespace WipedOut.Board
 
         /// <summary>
         /// Interacción con el ratón: con el cursor bloqueado (FPS), un clic izquierdo dispara la casilla que
-        /// está bajo la mira central (raycast desde el centro de la pantalla) según la fase actual.
+        /// está bajo la mira central (raycast desde el centro de la pantalla) según la fase actual. En la fase
+        /// de búsqueda, el clic sobre una casilla oculta la marca/desmarca como preselección (no se destapa) y
+        /// el botón rojo (doble clic) envía la preselección al servidor.
         /// </summary>
         private void HandleTileClick()
         {
@@ -656,6 +705,13 @@ namespace WipedOut.Board
             if (!TryGetCenterRay(out Ray ray))
                 return;
 
+            // El botón rojo se comprueba antes que las casillas: solo interactúa en búsqueda y gana al suelo.
+            if (IsRedButtonActive() && RayHitsRedButton(ray))
+            {
+                HandleRedButtonClick();
+                return;
+            }
+
             Vector2Int cell = default;
             bool found = false;
             foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
@@ -673,9 +729,13 @@ namespace WipedOut.Board
             int cellIndex = GameManager.CellIndex(cell.x, cell.y, GridWidth);
 
             if (view.phase == OnlinePhase.Placement)
+            {
                 _ = onlineService.PlaceMineAsync(cellIndex);
+            }
             else if (view.phase == OnlinePhase.Search)
-                _ = onlineService.RevealAsync(cellIndex);
+            {
+                TogglePreselection(view, cellIndex);
+            }
         }
 
         /// <summary>Raycast desde el centro exacto de la pantalla (donde está la mira).</summary>
@@ -692,23 +752,27 @@ namespace WipedOut.Board
             return true;
         }
 
-        /// <summary>Resalta suavemente la casilla que está bajo la mira central.</summary>
+        /// <summary>Resalta suavemente la casilla que está bajo la mira central y, en búsqueda, el botón rojo.</summary>
         private void UpdateHover()
         {
-            if (Cursor.lockState != CursorLockMode.Locked || !TryGetCenterRay(out Ray ray))
-            {
-                SetHover(new Vector2Int(-1, -1));
-                return;
-            }
-
             Vector2Int cell = new Vector2Int(-1, -1);
-            foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
+            bool buttonHovered = false;
+
+            if (Cursor.lockState == CursorLockMode.Locked && TryGetCenterRay(out Ray ray))
             {
-                if (tileCells.TryGetValue(hit.collider, out cell))
-                    break;
+                bool tileFound = false;
+                foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
+                {
+                    if (!tileFound && tileCells.TryGetValue(hit.collider, out cell))
+                        tileFound = true;
+
+                    if (IsRedButtonActive() && BelongsToRedButton(hit.collider))
+                        buttonHovered = true;
+                }
             }
 
             SetHover(cell);
+            SetRedButtonHover(buttonHovered);
         }
 
         private void SetHover(Vector2Int cell)
@@ -718,6 +782,305 @@ namespace WipedOut.Board
 
             hoveredCell = cell;
             RefreshAllTiles();
+        }
+
+        // ------------------------------------------- botón rojo 3D (preselección y confirmación)
+
+        /// <summary>El botón rojo solo interactúa en la fase de búsqueda y en el turno del jugador local.</summary>
+        private bool IsRedButtonActive()
+        {
+            if (redButton == null || onlineService == null)
+                return false;
+
+            OnlineMatchView view = onlineService.Current;
+            return view != null && view.phase == OnlinePhase.Search && view.IsMyTurn;
+        }
+
+        /// <summary>Localiza el botón rojo si no se conectó por el inspector (por nombre, como red de seguridad).</summary>
+        private void ResolveRedButton()
+        {
+            if (redButton != null)
+                return;
+
+            redButton = GameObject.Find("Red_button") ?? GameObject.Find("red_button");
+        }
+
+        /// <summary>
+        /// Actualiza cada frame el cartel flotante (billboard hacia la cámara) y la cuenta atrás de la
+        /// confirmación pendiente. Si se agota el plazo, el jugador se aleja o cambia de turno, se resetea.
+        /// </summary>
+        private void UpdateRedButton()
+        {
+            if (redButton == null)
+            {
+                ResolveRedButton();
+                return;
+            }
+
+            bool active = IsRedButtonActive();
+
+            // Cartel flotante estilo Roblox: siempre mira a la cámara.
+            if (bubble != null && bubble.activeSelf)
+            {
+                Camera camera = Camera.main;
+                if (camera != null)
+                    bubble.transform.rotation = camera.transform.rotation;
+            }
+
+            // Fuera de la fase de búsqueda (o del turno) el botón queda apagado y todo se resetea.
+            if (!active)
+            {
+                preselectedCells.Clear();
+                ResetRedButtonInteraction();
+                return;
+            }
+
+            if (redButtonPending)
+            {
+                bool expired = Time.realtimeSinceStartup >= redButtonConfirmDeadline;
+                bool walkedAway = player1Controller != null
+                    && Vector3.Distance(player1Controller.transform.position, redButton.transform.position) > redButtonMaxDistance;
+
+                if (expired || walkedAway)
+                {
+                    ResetRedButtonInteraction();
+                    return;
+                }
+
+                float remaining = Mathf.Max(0f, redButtonConfirmDeadline - Time.realtimeSinceStartup);
+                int seconds = Mathf.CeilToInt(remaining);
+                ShowBubble("¿Estás seguro que quieres apretar el botón? (" + seconds + "s)");
+            }
+            else if (redButtonHintUntil > 0f && Time.realtimeSinceStartup >= redButtonHintUntil)
+            {
+                HideBubble();
+                redButtonHintUntil = 0f;
+            }
+        }
+
+        /// <summary>
+        /// Clic sobre el botón rojo: sin preselección muestra un aviso; con preselección, el primer clic
+        /// abre la confirmación y el segundo (dentro del plazo) envía las casillas al servidor.
+        /// </summary>
+        private void HandleRedButtonClick()
+        {
+            if (preselectedCells.Count == 0)
+            {
+                redButtonPending = false;
+                redButtonHintUntil = Time.realtimeSinceStartup + redButtonHintSeconds;
+                ShowBubble("Marca tus casillas primero");
+                return;
+            }
+
+            if (!redButtonPending)
+            {
+                redButtonPending = true;
+                redButtonConfirmDeadline = Time.realtimeSinceStartup + redButtonConfirmSeconds;
+                return;
+            }
+
+            ConfirmRedButton();
+        }
+
+        /// <summary>Segundo clic dentro del plazo: envía la preselección como una única jugada de destape.</summary>
+        private void ConfirmRedButton()
+        {
+            int[] cells = new int[preselectedCells.Count];
+            preselectedCells.CopyTo(cells);
+
+            ResetRedButtonInteraction();
+            preselectedCells.Clear();
+
+            _ = onlineService.RevealManyAsync(cells);
+        }
+
+        /// <summary>Marca/desmarca una casilla oculta como preselección local (sin revelarla al servidor).</summary>
+        private void TogglePreselection(OnlineMatchView view, int cellIndex)
+        {
+            if (view.cells == null || cellIndex < 0 || cellIndex >= view.cells.Length)
+                return;
+
+            // Solo las casillas todavía ocultas (blancas) se pueden preseleccionar.
+            if (view.cells[cellIndex] != -1)
+                return;
+
+            if (!preselectedCells.Add(cellIndex))
+                preselectedCells.Remove(cellIndex);
+
+            RefreshAllTiles();
+        }
+
+        private void ResetRedButtonInteraction()
+        {
+            redButtonPending = false;
+            redButtonConfirmDeadline = 0f;
+            redButtonHintUntil = 0f;
+            HideBubble();
+        }
+
+        /// <summary>El collider alcanzado pertenece al botón rojo o a uno de sus hijos.</summary>
+        private bool BelongsToRedButton(Collider collider)
+        {
+            if (redButton == null || collider == null)
+                return false;
+
+            // Equivalente a GetComponentInParent sobre la raíz del botón: recorre la jerarquía hacia arriba.
+            Transform current = collider.transform;
+            while (current != null)
+            {
+                if (current == redButton.transform)
+                    return true;
+
+                current = current.parent;
+            }
+
+            return false;
+        }
+
+        /// <summary>El rayo central alcanza el collider del botón rojo (o el de sus hijos).</summary>
+        private bool RayHitsRedButton(Ray ray)
+        {
+            foreach (RaycastHit hit in Physics.RaycastAll(ray, 100f))
+            {
+                if (BelongsToRedButton(hit.collider))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void SetRedButtonHover(bool hovered)
+        {
+            if (redButtonHovered == hovered)
+                return;
+
+            redButtonHovered = hovered;
+            RefreshRedButtonHighlight();
+        }
+
+        private void EnsureRedButtonRenderers()
+        {
+            if (redButton == null)
+            {
+                redButtonRenderers = Array.Empty<Renderer>();
+                return;
+            }
+
+            if (redButtonRenderers.Length == 0)
+                redButtonRenderers = redButton.GetComponentsInChildren<Renderer>();
+        }
+
+        /// <summary>Resalta el botón rojo cuando está bajo la mira (solo en búsqueda); en colocación no se resalta.</summary>
+        private void RefreshRedButtonHighlight()
+        {
+            EnsureRedButtonRenderers();
+
+            foreach (Renderer renderer in redButtonRenderers)
+            {
+                if (renderer == null)
+                    continue;
+
+                if (redButtonHovered)
+                {
+                    Material material = renderer.sharedMaterial;
+                    Color baseColor = material != null && material.HasProperty(BaseColorId)
+                        ? material.GetColor(BaseColorId)
+                        : Color.white;
+
+                    propBlock.Clear();
+                    propBlock.SetColor(BaseColorId, Color.Lerp(baseColor, Color.white, hoverTint));
+                    propBlock.SetColor(ColorId, Color.Lerp(baseColor, Color.white, hoverTint));
+                    renderer.SetPropertyBlock(propBlock);
+                }
+                else
+                {
+                    renderer.SetPropertyBlock(EmptyPropBlock);
+                }
+            }
+        }
+
+        private void ShowBubble(string message)
+        {
+            EnsureBubble();
+
+            if (bubbleText != null)
+                bubbleText.text = message;
+
+            bubble.transform.position = BubblePosition();
+            bubble.SetActive(true);
+        }
+
+        private void HideBubble()
+        {
+            if (bubble != null)
+                bubble.SetActive(false);
+        }
+
+        private Vector3 BubblePosition()
+        {
+            if (redButton == null)
+                return Vector3.zero;
+
+            Collider collider = redButton.GetComponentInChildren<Collider>();
+            if (collider != null)
+            {
+                Bounds bounds = collider.bounds;
+                return bounds.center + Vector3.up * (bounds.extents.y + redButtonBubbleHeight);
+            }
+
+            return redButton.transform.position + Vector3.up * redButtonBubbleHeight;
+        }
+
+        /// <summary>Construye el cartel flotante (WorldSpace Canvas con fondo oscuro) una sola vez, oculto.</summary>
+        private void EnsureBubble()
+        {
+            if (bubble != null)
+                return;
+
+            bubble = new GameObject("RedButtonBubble", typeof(RectTransform));
+
+            Canvas canvas = bubble.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+
+            RectTransform rect = bubble.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(480f, 64f);
+
+            // Fondo oscuro semi-transparente (burbuja estilo Roblox).
+            GameObject backgroundGo = new GameObject("Background", typeof(RectTransform));
+            backgroundGo.transform.SetParent(bubble.transform, false);
+            RectTransform backgroundRect = (RectTransform)backgroundGo.transform;
+            StretchRect(backgroundRect);
+            Image background = backgroundGo.AddComponent<Image>();
+            background.color = new Color(0.08f, 0.1f, 0.13f, 0.85f);
+
+            // Texto.
+            GameObject textGo = new GameObject("Text", typeof(RectTransform));
+            textGo.transform.SetParent(bubble.transform, false);
+            RectTransform textRect = (RectTransform)textGo.transform;
+            StretchRect(textRect);
+            bubbleText = textGo.AddComponent<Text>();
+            bubbleText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            bubbleText.fontSize = 30;
+            bubbleText.alignment = TextAnchor.MiddleCenter;
+            bubbleText.color = Color.white;
+            bubbleText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            bubbleText.verticalOverflow = VerticalWrapMode.Overflow;
+            bubbleText.resizeTextForBestFit = true;
+            bubbleText.resizeTextMinSize = 10;
+            bubbleText.resizeTextMaxSize = 30;
+
+            // Escala el canvas para que las unidades de píxel pasen a unidades de mundo.
+            bubble.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
+
+            bubble.SetActive(false);
+        }
+
+        private static void StretchRect(RectTransform rect)
+        {
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = Vector2.zero;
+            rect.offsetMax = Vector2.zero;
         }
 
         private static bool ReadLeftClick()

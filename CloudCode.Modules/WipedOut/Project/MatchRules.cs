@@ -238,7 +238,7 @@ public static class MatchRules
     /// </summary>
     public static MoveResult ApplyPlay(
         MatchState state, string playerId, string requestId, int expectedTurnNumber,
-        string kind, int cell, DateTime now)
+        string kind, int cell, DateTime now, int[]? cells = null)
     {
         if (state.Status == MatchStatus.WaitingForGuest)
         {
@@ -250,7 +250,7 @@ public static class MatchRules
             return new MoveResult(MatchOutcome.MatchFinished, false, false);
         }
 
-        if (kind is not (MoveKind.Place or MoveKind.Reveal or MoveKind.Validate or MoveKind.Forfeit))
+        if (kind is not (MoveKind.Place or MoveKind.Reveal or MoveKind.RevealMany or MoveKind.Validate or MoveKind.Forfeit))
         {
             return new MoveResult(MatchOutcome.InvalidMove, false, false);
         }
@@ -272,7 +272,7 @@ public static class MatchRules
         if (kind == MoveKind.Forfeit)
         {
             engine.Forfeit(seat);
-            Commit(state, engine, requestId, seat, MoveKind.Forfeit, -1, nowUnix);
+            Commit(state, engine, requestId, seat, MoveKind.Forfeit, -1, null, nowUnix);
             Finish(state, engine, "forfeit");
             return new MoveResult(MatchOutcome.Applied, true, true);
         }
@@ -286,6 +286,7 @@ public static class MatchRules
         {
             MoveKind.Place => Reject(engine.PlaceMine(seat, cell).Outcome),
             MoveKind.Reveal => Reject(engine.Reveal(seat, cell).Outcome),
+            MoveKind.RevealMany => Reject(engine.RevealMany(seat, cells ?? Array.Empty<int>()).Outcome),
             _ => Reject(engine.Validate(seat).Outcome)
         };
 
@@ -294,7 +295,8 @@ public static class MatchRules
             return new MoveResult(rejection, changed, gameChanged);
         }
 
-        Commit(state, engine, requestId, seat, kind, kind is MoveKind.Place or MoveKind.Reveal ? cell : -1, nowUnix);
+        Commit(state, engine, requestId, seat, kind, kind is MoveKind.Place or MoveKind.Reveal ? cell : -1,
+            kind == MoveKind.RevealMany ? cells : null, nowUnix);
         if (engine.IsFinished)
         {
             Finish(state, engine, "lives");
@@ -424,6 +426,18 @@ public static class MatchRules
                     LevelAdvanced = reveal.LevelAdvanced
                 };
 
+            case MoveKind.RevealMany:
+                var revealMany = engine.RevealMany(move.Seat, move.Cells);
+                return new LastEvent
+                {
+                    Kind = MoveKind.RevealMany,
+                    Seat = move.Seat,
+                    Cell = revealMany.Cell,
+                    WasMine = revealMany.Outcome == RevealOutcome.Mine,
+                    LivesLost = revealMany.LivesLost,
+                    LevelAdvanced = revealMany.LevelAdvanced
+                };
+
             case MoveKind.Validate:
                 var validate = engine.Validate(move.Seat);
                 return new LastEvent
@@ -454,7 +468,7 @@ public static class MatchRules
         }
     }
 
-    private static void Commit(MatchState state, MatchEngine engine, string requestId, int seat, string kind, int cell, long nowUnix)
+    private static void Commit(MatchState state, MatchEngine engine, string requestId, int seat, string kind, int cell, int[]? cells, long nowUnix)
     {
         state.Moves.Add(new MoveRecord
         {
@@ -462,6 +476,7 @@ public static class MatchRules
             Seat = seat,
             Kind = kind,
             Cell = cell,
+            Cells = cells ?? Array.Empty<int>(),
             AtUnixSeconds = nowUnix
         });
 

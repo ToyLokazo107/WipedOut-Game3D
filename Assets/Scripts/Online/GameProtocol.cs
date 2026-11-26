@@ -9,6 +9,6 @@ namespace WipedOut.Online
     /// </summary>
     public static class GameProtocol
     {
-        public const int Version = 2;
+        public const int Version = 3;
     }
 }

@@ -31,6 +31,7 @@ namespace WipedOut.Online
         // Tipos de jugada que entiende PlayMove (los mismos textos que MoveKind en el servidor).
         private const string KindPlace = "place";
         private const string KindReveal = "reveal";
+        private const string KindRevealMany = "reveal_many";
         private const string KindValidate = "validate";
         private const string KindForfeit = "forfeit";
 
@@ -107,6 +108,16 @@ namespace WipedOut.Online
             return PlayMoveAsync(KindReveal, cellIndex, "reveal:" + Current?.turnNumber + ":" + cellIndex);
         }
 
+        /// <summary>
+        /// Botón rojo 3D: destapa en el turno actual las casillas preseleccionadas por el jugador
+        /// (una sola jugada con varias casillas).
+        /// </summary>
+        public Task<OnlineMatchView> RevealManyAsync(int[] cells)
+        {
+            int count = cells != null ? cells.Length : 0;
+            return PlayMoveAsync(KindRevealMany, -1, "reveal_many:" + Current?.turnNumber + ":" + count, cells);
+        }
+
         /// <summary>Botón rojo: afirmo que ya no quedan casillas seguras sin destapar.</summary>
         public Task<OnlineMatchView> ValidateAsync()
         {
@@ -140,23 +151,30 @@ namespace WipedOut.Online
                 accept: false);
         }
 
-        private Task<OnlineMatchView> PlayMoveAsync(string kind, int cell, string actionKey)
+        private Task<OnlineMatchView> PlayMoveAsync(string kind, int cell, string actionKey, int[] cells = null)
         {
             if (Current == null)
             {
                 return Task.FromResult<OnlineMatchView>(null);
             }
 
+            var args = new Dictionary<string, object>
+            {
+                { "matchId", Current.matchCode },
+                { "expectedTurnNumber", Current.turnNumber },
+                { "kind", kind },
+                { "cell", cell },
+            };
+
+            if (cells != null)
+            {
+                args["cells"] = cells;
+            }
+
             return CallAsync(
                 "PlayMove",
                 actionKey,
-                new Dictionary<string, object>
-                {
-                    { "matchId", Current.matchCode },
-                    { "expectedTurnNumber", Current.turnNumber },
-                    { "kind", kind },
-                    { "cell", cell },
-                });
+                args);
         }
 
         /// <summary>

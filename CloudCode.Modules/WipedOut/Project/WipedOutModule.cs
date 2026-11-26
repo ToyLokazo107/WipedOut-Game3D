@@ -126,7 +126,7 @@ public class WipedOutModule
     /// <param name="expectedTurnNumber">Turno sobre el que el cliente cree estar jugando.</param>
     [CloudCodeFunction("PlayMove")]
     public async Task<string> PlayMove(
-        IExecutionContext context, string matchId, string requestId, int expectedTurnNumber, string kind, int cell)
+        IExecutionContext context, string matchId, string requestId, int expectedTurnNumber, string kind, int cell, int[]? cells)
     {
         var playerId = RequirePlayer(context);
         RequireRequestId(requestId);
@@ -148,7 +148,7 @@ public class WipedOutModule
         RequireParticipant(state, playerId);
 
         // 3. Lo vencido, turno y reglas del juego.
-        var result = MatchRules.ApplyPlay(state, playerId, requestId, expectedTurnNumber, kind ?? string.Empty, cell, now);
+        var result = MatchRules.ApplyPlay(state, playerId, requestId, expectedTurnNumber, kind ?? string.Empty, cell, now, cells);
 
         if (!result.Changed)
         {
