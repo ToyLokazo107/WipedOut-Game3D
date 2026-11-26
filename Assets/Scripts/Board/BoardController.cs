@@ -137,7 +137,7 @@ namespace WipedOut.Board
         private GameObject bubble;
         private Text bubbleText;
 
-        private static readonly MaterialPropertyBlock EmptyPropBlock = new MaterialPropertyBlock();
+        private MaterialPropertyBlock emptyPropBlock;
 
         private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int ColorId = Shader.PropertyToID("_Color");
@@ -145,6 +145,7 @@ namespace WipedOut.Board
         private void Awake()
         {
             propBlock = new MaterialPropertyBlock();
+            emptyPropBlock = new MaterialPropertyBlock();
             ResolveControllers();
             ResolveMapBounds();
             ResolveRedButton();
@@ -994,7 +995,7 @@ namespace WipedOut.Board
                 }
                 else
                 {
-                    renderer.SetPropertyBlock(EmptyPropBlock);
+                    renderer.SetPropertyBlock(emptyPropBlock);
                 }
             }
         }
